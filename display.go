@@ -14,12 +14,19 @@ type Display struct {
 	area                *pterm.AreaPrinter
 	host_format_string  string
 	longest_host_string int
+	onlyOnline          bool
+	onlyOffline         bool
 }
 
 func NewDisplay(pwh *WrapperHolder) *Display {
 	return &Display{
 		pwh: pwh,
 	}
+}
+
+func (d *Display) SetFilter(onlyOnline, onlyOffline bool) {
+	d.onlyOnline = onlyOnline
+	d.onlyOffline = onlyOffline
 }
 
 func (d *Display) SetNoHeader(v bool) {
@@ -49,8 +56,18 @@ func (d *Display) Update() {
 	}
 
 	for _, wrapper := range d.pwh.ping_wrappers {
-		sb.WriteString(fmt.Sprintf(d.host_format_string, wrapper.Host()))
 		stats := wrapper.CalcStats(2 * 1e9)
+
+		isOnline := stats.state && stats.error_message == ""
+
+		if d.onlyOnline && !isOnline {
+			continue
+		}
+		if d.onlyOffline && isOnline {
+			continue
+		}
+
+		sb.WriteString(fmt.Sprintf(d.host_format_string, wrapper.Host()))
 		if stats.error_message != "" {
 			sb.WriteString(bold_red.Sprintf("❌ %v", stats.error_message))
 		} else if stats.last_seen_nano > 2*1e9 {

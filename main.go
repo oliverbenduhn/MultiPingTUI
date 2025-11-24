@@ -32,9 +32,25 @@ func main() {
 	options.quiet = flag.Bool("q", false, "quiet mode, disable live update")
 	options.log = flag.String("log", "", "transition log `filename`")
 	options.update = flag.Bool("update", false, "check and update to latest version (source github)")
+	once := flag.Bool("once", false, "ping once and exit")
+	onlyOnline := flag.Bool("only-online", false, "show only online hosts (once mode)")
+	onlyOffline := flag.Bool("only-offline", false, "show only offline hosts (once mode)")
 	flag.Usage = usage
 	flag.Parse()
-	hosts := flag.Args()
+
+	rawHosts := flag.Args()
+	var hosts []string
+
+	for _, arg := range rawHosts {
+		// Try to expand as CIDR
+		ips, err := ExpandCIDR(arg)
+		if err == nil {
+			hosts = append(hosts, ips...)
+		} else {
+			// Not a CIDR, treat as single host
+			hosts = append(hosts, arg)
+		}
+	}
 
 	if *options.update {
 		selfUpdate()
@@ -43,6 +59,11 @@ func main() {
 
 	if len(hosts) == 0 {
 		fmt.Println("no host provided")
+		return
+	}
+
+	if *once {
+		RunPingOnce(hosts, *onlyOnline, *onlyOffline)
 		return
 	}
 
@@ -75,6 +96,7 @@ func main() {
 
 	if !*options.quiet {
 		display := NewDisplay(wh)
+		display.SetFilter(*onlyOnline, *onlyOffline)
 		display.Start()
 
 		for !quitFlag {

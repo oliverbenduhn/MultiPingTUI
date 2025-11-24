@@ -44,7 +44,8 @@ func (w *ProbingWrapper) Start() {
 		w.pinger.SetPrivileged(w.privileged)
 	}
 
-	w.hstring = fmt.Sprintf("%s (%s)", w.host, w.ip.String())
+	displayHost := hostDisplayName(w.host, w.ip)
+	w.hstring = fmt.Sprintf("%s (%s)", displayHost, w.ip.String())
 
 	w.stats.hrepr = w.host
 	w.stats.iprepr = w.ip.IP.String()

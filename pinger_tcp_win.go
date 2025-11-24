@@ -23,7 +23,8 @@ type TCPPingWrapper struct {
 }
 
 func (w *TCPPingWrapper) Start() {
-	w.hstring = fmt.Sprintf("tcp://%v:%v (%v:%v)", w.host, w.port, w.ip.String(), w.port)
+	displayHost := hostDisplayName(w.host, w.ip)
+	w.hstring = fmt.Sprintf("tcp://%v:%v (%v:%v)", displayHost, w.port, w.ip.String(), w.port)
 	w.stats.hrepr = fmt.Sprintf("tcp://%v:%v", w.host, w.port)
 	w.stats.iprepr = w.ip.IP.String()
 

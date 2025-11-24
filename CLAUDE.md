@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`multiping` is a CLI tool written in Go that monitors multiple network targets simultaneously using various probing methods (ICMP ping, TCP probing, or system ping). It provides real-time visual feedback via terminal and optional JSON logging of state transitions.
+`MultiPingTUI` is an enhanced TUI (Terminal User Interface) version of multiping written in Go. It monitors multiple network targets simultaneously using various probing methods (ICMP ping, TCP probing, or system ping). It provides an interactive Midnight Commander/Claude Code-style interface with keyboard navigation, live filtering, sorting, and detailed host statistics, along with optional JSON logging of state transitions.
 
 ## Build and Development Commands
 
@@ -12,20 +12,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Standard build
-go build -o multiping
+go build -o multipingtui
 
 # Build with release script (cross-platform, includes version info)
 ./release.sh
 
-# Build for specific platform
+# Build for specific platform (note: requires go mod vendor first)
+go mod vendor
 env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod vendor
 ```
 
 ### Running
 
 ```bash
-# Basic usage
-go run . localhost google.com
+# TUI Mode (default) - Interactive interface
+go run . localhost google.com 8.8.8.8
 
 # With TCP probing
 go run . tcp://google.com:443 tcp://[::1]:22
@@ -33,24 +34,41 @@ go run . tcp://google.com:443 tcp://[::1]:22
 # With CIDR expansion (automatically expands subnets)
 go run . 192.168.1.0/24
 
+# Legacy display mode (non-interactive, pterm-based)
+go run . -tui=false localhost google.com
+
 # System ping mode
 go run . -s localhost
 
-# Quiet mode with logging
+# Quiet mode with logging (no display)
 go run . -q -log transitions.json google.com
 
 # Once mode (ping once and exit) - useful for scripting
 go run . -once 192.168.1.0/24
 
-# Filter display: show only online hosts
-go run . -only-online 192.168.1.0/24
+# Legacy mode with filters: show only online hosts
+go run . -tui=false -only-online 192.168.1.0/24
 
-# Filter display: show only offline hosts
-go run . -only-offline 192.168.1.0/24
+# Legacy mode with filters: show only offline hosts
+go run . -tui=false -only-offline 192.168.1.0/24
 
 # Once mode with filters (e.g., find all online hosts in subnet)
 go run . -once -only-online 192.168.1.0/24
 ```
+
+### TUI Keyboard Shortcuts
+
+When running in TUI mode (default):
+- `↑/↓` or `j/k` - Navigate through hosts
+- `Enter` - Toggle detailed view for selected host
+- `a` - Filter: show all hosts
+- `o` - Filter: show only online hosts
+- `f` - Filter: show only offline hosts
+- `n` - Sort by name
+- `s` - Sort by status
+- `r` - Sort by RTT
+- `Esc` - Back from detail view
+- `q` or `Ctrl+C` - Quit
 
 ### Testing
 
@@ -80,12 +98,18 @@ No test files exist in the repository currently.
    - `WrapperHolder` (wrapperholder.go): Manages collection of ping wrappers
    - `TransitionWriter` (transitionwriter.go): Thread-safe buffered JSON logger for state changes
 
-4. **Display Layer**
-   - `Display` (display.go): Terminal UI using pterm library
-   - Real-time updates with color-coded status (✅/❌)
-   - Shows RTT, last loss information, and error messages
-   - Supports filtering: `SetFilter()` allows showing only online or offline hosts
-   - Filter logic checks both `stats.state` and `stats.error_message` to determine online status
+4. **Display Layer (Two Modes)**
+   - **TUI Mode** (tui.go): Interactive bubbletea-based TUI (default)
+     - Full keyboard navigation with arrow keys and vim-style keys
+     - Live filtering (all/online/offline) with `a`/`o`/`f` keys
+     - Sorting by name, status, or RTT with `n`/`s`/`r` keys
+     - Detail view with `Enter` key showing comprehensive host statistics
+     - Styled with lipgloss for a modern terminal look
+   - **Legacy Display Mode** (display.go): Non-interactive pterm-based display
+     - Real-time updates with color-coded status (✅/❌)
+     - Shows RTT, last loss information, and error messages
+     - Supports filtering: `SetFilter()` allows showing only online or offline hosts
+     - Enabled with `-tui=false` flag
 
 5. **Subnet Expansion & Once Mode** (subnet.go)
    - `ExpandCIDR()`: Parses CIDR notation and expands to individual IP addresses
@@ -133,9 +157,12 @@ No test files exist in the repository currently.
 
 ## Key Dependencies
 
+- `github.com/charmbracelet/bubbletea`: TUI framework (Elm architecture)
+- `github.com/charmbracelet/lipgloss`: Terminal styling
+- `github.com/charmbracelet/bubbles`: TUI components (key bindings)
 - `github.com/prometheus-community/pro-bing`: Pure Go ICMP implementation
 - `github.com/tevino/tcp-shaker`: TCP SYN/ACK probing (non-Windows)
-- `github.com/pterm/pterm`: Terminal UI library
+- `github.com/pterm/pterm`: Terminal UI library (legacy mode)
 - `github.com/valyala/fastjson`: JSON parsing for GitHub API
 - `github.com/minio/selfupdate`: Self-update mechanism
 
@@ -178,12 +205,52 @@ The Display layer supports filtering visible hosts:
 - If `onlyOffline=true`: skip hosts that are online
 - Useful for monitoring large subnets and focusing on specific states
 
+## Development Patterns (TUI-Specific)
+
+### TUI Architecture (tui.go)
+
+The TUI follows the Elm/Bubbletea architecture:
+
+1. **Model** (`TUIModel`): Holds all application state
+   - Current cursor position
+   - Filter mode (All/Online/Offline)
+   - Sort mode (Name/Status/RTT)
+   - Detail view toggle
+   - Reference to `WrapperHolder` for ping data
+
+2. **Update** (`Update(msg tea.Msg)`): Handles all messages
+   - `tea.KeyMsg`: Keyboard input
+   - `tickMsg`: 100ms tick for updating stats
+   - `tea.WindowSizeMsg`: Terminal resize
+   - Returns updated model and commands
+
+3. **View** (`View()`): Renders the current state
+   - Title with version
+   - Header with filter/sort info
+   - List view or detail view (based on `showDetails`)
+   - Help text at bottom
+
+### Adding New TUI Features
+
+To add a new keyboard shortcut:
+1. Add key binding to `keyMap` struct in tui.go
+2. Handle it in the `Update()` function's switch statement
+3. Update `View()` help text
+4. Update README.md keyboard shortcuts section
+
+To add a new filter or sort mode:
+1. Add enum value to `FilterMode` or `SortMode`
+2. Implement logic in `getFilteredWrappers()`
+3. Add key binding and update handler
+4. Update display strings in `getFilterModeString()` or `getSortModeString()`
+
 ## File Structure
 
 ```
-multiping/
-├── main.go                    # Entry point, CLI, main loop
-├── display.go                 # Terminal UI
+MultiPingTUI/
+├── main.go                    # Entry point, CLI, mode selection
+├── tui.go                     # Interactive TUI (bubbletea)
+├── display.go                 # Legacy terminal UI (pterm)
 ├── pingwrapper.go             # Factory and interface
 ├── pinger_probing.go          # Pure Go ICMP
 ├── pinger_system.go           # System ping subprocess

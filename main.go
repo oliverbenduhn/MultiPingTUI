@@ -21,6 +21,7 @@ type Options struct {
 	log                 *string
 	update              *bool
 	system_ping_options *string
+	tui                 *bool
 }
 
 func main() {
@@ -32,6 +33,7 @@ func main() {
 	options.quiet = flag.Bool("q", false, "quiet mode, disable live update")
 	options.log = flag.String("log", "", "transition log `filename`")
 	options.update = flag.Bool("update", false, "check and update to latest version (source github)")
+	options.tui = flag.Bool("tui", true, "use interactive TUI mode (default)")
 	once := flag.Bool("once", false, "ping once and exit")
 	onlyOnline := flag.Bool("only-online", false, "show only online hosts (once mode)")
 	onlyOffline := flag.Bool("only-offline", false, "show only offline hosts (once mode)")
@@ -83,6 +85,17 @@ func main() {
 	wh := &WrapperHolder{}
 	wh.InitHosts(hosts, options, transition_writer)
 
+	// TUI mode (default, interactive)
+	if *options.tui && !*options.quiet {
+		err := RunTUI(wh, transition_writer)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Legacy display mode
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
 	go func() {
@@ -122,7 +135,7 @@ func VersionString() string {
 }
 
 func VersionStringLong() string {
-	return fmt.Sprintf("multiping %v-%v (build on %v using %v)\nhttps://github.com/babs/multiping\n\n", Version, CommitHash, BuildTimestamp, Builder)
+	return fmt.Sprintf("multipingTUI %v-%v (build on %v using %v)\nhttps://github.com/oliverbenduhn/MultiPingTUI\n\n", Version, CommitHash, BuildTimestamp, Builder)
 }
 
 func usage() {

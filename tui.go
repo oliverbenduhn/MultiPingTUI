@@ -16,6 +16,7 @@ type FilterMode int
 
 const (
 	FilterAll FilterMode = iota
+	FilterSmart
 	FilterOnline
 	FilterOffline
 )
@@ -41,6 +42,9 @@ type TUIModel struct {
 	height           int
 	quitting         bool
 	transitionWriter *TransitionWriter
+	editingHosts     bool
+	hostInput        string
+	statusMessage    string
 }
 
 // tickMsg is sent every 100ms to update the display
@@ -48,17 +52,14 @@ type tickMsg time.Time
 
 // keyMap defines the keyboard shortcuts
 type keyMap struct {
-	Up            key.Binding
-	Down          key.Binding
-	Enter         key.Binding
-	Quit          key.Binding
-	FilterAll     key.Binding
-	FilterOnline  key.Binding
-	FilterOffline key.Binding
-	SortName      key.Binding
-	SortStatus    key.Binding
-	SortRTT       key.Binding
-	Escape        key.Binding
+	Up          key.Binding
+	Down        key.Binding
+	Enter       key.Binding
+	Quit        key.Binding
+	FilterCycle key.Binding
+	SortCycle   key.Binding
+	Escape      key.Binding
+	EditHosts   key.Binding
 }
 
 var keys = keyMap{
@@ -78,33 +79,21 @@ var keys = keyMap{
 		key.WithKeys("q", "ctrl+c"),
 		key.WithHelp("q", "quit"),
 	),
-	FilterAll: key.NewBinding(
-		key.WithKeys("a"),
-		key.WithHelp("a", "all"),
-	),
-	FilterOnline: key.NewBinding(
-		key.WithKeys("o"),
-		key.WithHelp("o", "online"),
-	),
-	FilterOffline: key.NewBinding(
+	FilterCycle: key.NewBinding(
 		key.WithKeys("f"),
-		key.WithHelp("f", "offline"),
+		key.WithHelp("f", "cycle filter"),
 	),
-	SortName: key.NewBinding(
-		key.WithKeys("n"),
-		key.WithHelp("n", "sort name"),
-	),
-	SortStatus: key.NewBinding(
+	SortCycle: key.NewBinding(
 		key.WithKeys("s"),
-		key.WithHelp("s", "sort status"),
-	),
-	SortRTT: key.NewBinding(
-		key.WithKeys("r"),
-		key.WithHelp("r", "sort rtt"),
+		key.WithHelp("s", "cycle sort"),
 	),
 	Escape: key.NewBinding(
 		key.WithKeys("esc"),
 		key.WithHelp("esc", "back"),
+	),
+	EditHosts: key.NewBinding(
+		key.WithKeys("e"),
+		key.WithHelp("e", "edit hosts"),
 	),
 }
 
@@ -149,8 +138,8 @@ var (
 )
 
 func NewTUIModel(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode) *TUIModel {
-	if initialFilter != FilterOnline && initialFilter != FilterOffline {
-		initialFilter = FilterAll
+	if initialFilter != FilterOnline && initialFilter != FilterOffline && initialFilter != FilterSmart {
+		initialFilter = FilterSmart
 	}
 
 	return &TUIModel{
@@ -189,6 +178,40 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 
 	case tea.KeyMsg:
+		if m.editingHosts {
+			switch {
+			case key.Matches(msg, keys.Escape):
+				m.editingHosts = false
+				m.hostInput = ""
+				m.statusMessage = ""
+				return m, nil
+			case key.Matches(msg, keys.Enter):
+				m.applyHostInput()
+				return m, nil
+			}
+			// basic inline input editing
+			switch msg.Type {
+			case tea.KeyBackspace, tea.KeyDelete:
+				if len(m.hostInput) > 0 {
+					m.hostInput = m.hostInput[:len(m.hostInput)-1]
+				}
+				return m, nil
+			case tea.KeyCtrlL:
+				m.hostInput = ""
+				return m, nil
+			case tea.KeyCtrlN:
+				m.hostInput += "\n"
+				return m, nil
+			case tea.KeySpace:
+				m.hostInput += " "
+				return m, nil
+			case tea.KeyRunes:
+				m.hostInput += string(msg.Runes)
+				return m, nil
+			}
+			return m, nil
+		}
+
 		switch {
 		case key.Matches(msg, keys.Quit):
 			m.quitting = true
@@ -218,31 +241,26 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case key.Matches(msg, keys.FilterAll):
-			m.filterMode = FilterAll
+		case key.Matches(msg, keys.FilterCycle):
+			m.filterMode = nextFilterMode(m.filterMode)
 			m.cursor = 0
 			return m, nil
 
-		case key.Matches(msg, keys.FilterOnline):
-			m.filterMode = FilterOnline
-			m.cursor = 0
+		case key.Matches(msg, keys.SortCycle):
+			m.sortMode = nextSortMode(m.sortMode)
 			return m, nil
 
-		case key.Matches(msg, keys.FilterOffline):
-			m.filterMode = FilterOffline
-			m.cursor = 0
-			return m, nil
-
-		case key.Matches(msg, keys.SortName):
-			m.sortMode = SortByName
-			return m, nil
-
-		case key.Matches(msg, keys.SortStatus):
-			m.sortMode = SortByStatus
-			return m, nil
-
-		case key.Matches(msg, keys.SortRTT):
-			m.sortMode = SortByRTT
+		case key.Matches(msg, keys.EditHosts):
+			m.editingHosts = true
+			m.statusMessage = "Edit hosts: one per line, Enter=apply, Esc=cancel, Ctrl+L=clear, Ctrl+N=new line."
+			var b strings.Builder
+			for i, w := range m.wh.Wrappers() {
+				if i > 0 {
+					b.WriteString("\n")
+				}
+				b.WriteString(w.Host())
+			}
+			m.hostInput = b.String()
 			return m, nil
 		}
 	}
@@ -268,6 +286,16 @@ func (m *TUIModel) View() string {
 	s.WriteString(header)
 	s.WriteString("\n\n")
 
+	if m.statusMessage != "" {
+		s.WriteString(helpStyle.Render(m.statusMessage))
+		s.WriteString("\n\n")
+	}
+
+	if m.editingHosts {
+		s.WriteString(m.renderHostInput())
+		return s.String()
+	}
+
 	// Get filtered and sorted wrappers
 	filtered := m.getFilteredWrappers()
 
@@ -284,7 +312,9 @@ func (m *TUIModel) View() string {
 	if m.showDetails {
 		s.WriteString(helpStyle.Render("esc: back │ q: quit"))
 	} else {
-		s.WriteString(helpStyle.Render("↑↓/jk: navigate │ enter: details │ a: all │ o: online │ f: offline │ n: sort name │ s: sort status │ r: sort rtt │ q: quit"))
+		s.WriteString(helpStyle.Render("↑↓/jk: navigate │ enter: details │ e: edit hosts │ q: quit"))
+		s.WriteString("\n")
+		s.WriteString(helpStyle.Render("f: cycle filters (smart/online/offline/all) │ s: cycle sort (name/status/rtt/last)"))
 	}
 
 	return s.String()
@@ -296,12 +326,20 @@ func (m *TUIModel) renderListView(wrappers []PingWrapperInterface) string {
 	for i, wrapper := range wrappers {
 		stats := wrapper.CalcStats(2 * 1e9)
 		isOnline := stats.state && stats.error_message == ""
+		lastLossText := ""
+		if stats.last_loss_nano > 0 {
+			lastLossText = fmt.Sprintf(" (last loss %s: %s ago for %s)",
+				time.Unix(0, stats.last_loss_nano).Format("2006-01-02 15:04:05"),
+				time.Duration(time.Now().UnixNano()-stats.last_loss_nano).Round(time.Second),
+				time.Duration(stats.last_loss_duration).Round(time.Second/10),
+			)
+		}
 
 		// Build line
 		var line string
 		if isOnline {
-			line = fmt.Sprintf("✓ %-40s %s", wrapper.Host(), stats.lastrtt_as_string)
-			if i == m.cursor {
+			line = fmt.Sprintf("✓ %-40s %s%s", wrapper.Host(), stats.lastrtt_as_string, lastLossText)
+			if i == m.cursor && len(wrappers) > 1 {
 				line = selectedStyle.Render(line)
 			} else {
 				line = onlineStyle.Render(line)
@@ -312,9 +350,11 @@ func (m *TUIModel) renderListView(wrappers []PingWrapperInterface) string {
 				reason = stats.error_message
 			} else if stats.lastrecv == 0 {
 				reason = "never replied"
+			} else {
+				reason = fmt.Sprintf("last reply %s ago", time.Duration(stats.last_seen_nano).Round(time.Second))
 			}
 			line = fmt.Sprintf("✗ %-40s %s", wrapper.Host(), reason)
-			if i == m.cursor {
+			if i == m.cursor && len(wrappers) > 1 {
 				line = selectedStyle.Render(line)
 			} else {
 				line = offlineStyle.Render(line)
@@ -332,6 +372,17 @@ func (m *TUIModel) renderListView(wrappers []PingWrapperInterface) string {
 	return s.String()
 }
 
+func (m *TUIModel) renderHostInput() string {
+	var b strings.Builder
+	b.WriteString("Edit hosts (one per line, CIDR allowed):\n")
+	b.WriteString("Ctrl+L: clear all │ Ctrl+N: new line │ enter: apply │ esc: cancel\n\n")
+	b.WriteString("hosts>\n")
+	b.WriteString(m.hostInput)
+	b.WriteString("█")
+	b.WriteString("\n\n")
+	return b.String()
+}
+
 func (m *TUIModel) renderDetailView(wrapper PingWrapperInterface) string {
 	stats := wrapper.CalcStats(2 * 1e9)
 	isOnline := stats.state && stats.error_message == ""
@@ -345,7 +396,6 @@ func (m *TUIModel) renderDetailView(wrapper PingWrapperInterface) string {
 		details.WriteString("\n\n")
 		details.WriteString(fmt.Sprintf("Last RTT: %s\n", stats.lastrtt_as_string))
 		details.WriteString(fmt.Sprintf("Last Received: %s ago\n", time.Duration(stats.last_seen_nano).Round(time.Millisecond)))
-
 		if stats.last_loss_nano > 0 {
 			details.WriteString("\n")
 			details.WriteString(fmt.Sprintf("Last Loss: %s\n", time.Unix(0, stats.last_loss_nano).Format("2006-01-02 15:04:05")))
@@ -364,21 +414,41 @@ func (m *TUIModel) renderDetailView(wrapper PingWrapperInterface) string {
 		}
 	}
 
-	details.WriteString(fmt.Sprintf("\nUptime: %s\n", time.Duration(time.Now().UnixNano()-stats.startup_time).Round(time.Second)))
+	details.WriteString(fmt.Sprintf("\nOnline time: %s\n", stats.OnlineUptime(time.Now().UnixNano()).Round(time.Second)))
 
 	return detailStyle.Render(details.String())
+}
+
+func (m *TUIModel) applyHostInput() {
+	raw := strings.TrimSpace(m.hostInput)
+	hosts := parseHostsInput(raw)
+	m.wh.ReplaceHosts(hosts)
+	m.cursor = 0
+	m.filterMode = FilterAll
+	m.showDetails = false
+	if len(hosts) == 0 {
+		m.statusMessage = "Cleared hosts; no targets configured."
+	} else {
+		m.statusMessage = fmt.Sprintf("Updated hosts (%d)", len(hosts))
+	}
+	m.editingHosts = false
 }
 
 func (m *TUIModel) getFilteredWrappers() []PingWrapperInterface {
 	var filtered []PingWrapperInterface
 
-	for _, wrapper := range m.wh.ping_wrappers {
+	for _, wrapper := range m.wh.Wrappers() {
 		stats := wrapper.CalcStats(2 * 1e9)
 		isOnline := stats.state && stats.error_message == ""
+		seen := stats.has_ever_received
 
 		switch m.filterMode {
 		case FilterAll:
 			filtered = append(filtered, wrapper)
+		case FilterSmart:
+			if isOnline || seen {
+				filtered = append(filtered, wrapper)
+			}
 		case FilterOnline:
 			if isOnline {
 				filtered = append(filtered, wrapper)
@@ -422,6 +492,8 @@ func (m *TUIModel) getFilterModeString() string {
 	switch m.filterMode {
 	case FilterAll:
 		return "All"
+	case FilterSmart:
+		return "Smart"
 	case FilterOnline:
 		return "Online"
 	case FilterOffline:
@@ -444,6 +516,45 @@ func (m *TUIModel) getSortModeString() string {
 	default:
 		return "Unknown"
 	}
+}
+
+func nextFilterMode(current FilterMode) FilterMode {
+	switch current {
+	case FilterSmart:
+		return FilterOnline
+	case FilterOnline:
+		return FilterOffline
+	case FilterOffline:
+		return FilterAll
+	default:
+		return FilterSmart
+	}
+}
+
+func nextSortMode(current SortMode) SortMode {
+	switch current {
+	case SortByName:
+		return SortByStatus
+	case SortByStatus:
+		return SortByRTT
+	case SortByRTT:
+		return SortByLastSeen
+	default:
+		return SortByName
+	}
+}
+
+func parseHostsInput(raw string) []string {
+	fields := strings.Fields(raw)
+	var hosts []string
+	for _, item := range fields {
+		if ips, err := ExpandCIDR(item); err == nil {
+			hosts = append(hosts, ips...)
+		} else {
+			hosts = append(hosts, item)
+		}
+	}
+	return hosts
 }
 
 // RunTUI starts the TUI interface with an initial filter mode applied

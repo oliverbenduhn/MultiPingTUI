@@ -23,11 +23,11 @@ mping localhost google.com 8.8.8.8
 **Keyboard Shortcuts:**
 - `↑/↓` or `j/k` - Navigate through hosts
 - `Enter` - Show detailed view for selected host
-- `a` - Show all hosts
-- `o` - Filter: show only online hosts
-- `f` - Filter: show only offline hosts
+- `f` - Cycle filter: smart (online or seen) → online → offline → all
+- `s` - Cycle sort: name → status → RTT → last seen
+- `e` - Edit host list (replace hosts while running)
 - `n` - Sort by name
-- `s` - Sort by status
+- `S` - Sort by status
 - `r` - Sort by RTT
 - `Esc` - Back from detail view
 - `q` or `Ctrl+C` - Quit
@@ -37,10 +37,12 @@ mping localhost google.com 8.8.8.8
 mping 192.168.1.0/24
 ```
 
+You can start the TUI without providing hosts and add them at runtime with `e`.
+
 **Legacy Display Mode:**
 ```bash
-# Use -tui=false to disable TUI mode
-mping -tui=false localhost google.com
+# Use -notui to disable TUI mode
+mping -notui localhost google.com
 ```
 
 ## Documentation
@@ -52,7 +54,7 @@ See `mping -h` for detailed information.
 **TUI Mode (Default)**
 Interactive terminal UI with keyboard navigation, filtering, and detailed host views. This is the default mode and provides the best user experience.
 
-**Legacy Display Mode** (`-tui=false`)
+**Legacy Display Mode** (`-notui`)
 Simple non-interactive display mode compatible with the original multiping. Updates every 100ms.
 
 **Once Mode** (`-once`)
@@ -133,10 +135,10 @@ Filter the display to show only specific host states:
 These work in both continuous and once mode:
 ```bash
 # Find all online hosts in subnet
-mping -tui=false -once -only-online 192.168.1.0/24
+mping -notui -once -only-online 192.168.1.0/24
 
 # Monitor only offline hosts continuously
-mping -tui=false -only-offline 192.168.1.1 192.168.1.2 192.168.1.3
+mping -notui -only-offline 192.168.1.1 192.168.1.2 192.168.1.3
 ```
 
 In TUI mode these flags set the initial filter when the UI opens; you can still toggle filters dynamically with `a`/`o`/`f`.

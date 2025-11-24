@@ -36,7 +36,7 @@ func (d *Display) SetNoHeader(v bool) {
 func (d *Display) Start() {
 	d.area, _ = pterm.DefaultArea.Start()
 	d.longest_host_string = 0
-	for _, wrapper := range d.pwh.ping_wrappers {
+	for _, wrapper := range d.pwh.Wrappers() {
 		if len(wrapper.Host()) > d.longest_host_string {
 			d.longest_host_string = len(wrapper.Host())
 		}
@@ -55,7 +55,7 @@ func (d *Display) Update() {
 		sb.WriteString(VersionString())
 	}
 
-	for _, wrapper := range d.pwh.ping_wrappers {
+	for _, wrapper := range d.pwh.Wrappers() {
 		stats := wrapper.CalcStats(2 * 1e9)
 
 		isOnline := stats.state && stats.error_message == ""

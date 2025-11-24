@@ -1,5 +1,5 @@
 #define MyAppName "mping"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.2"
 #define MyAppPublisher "oliverbenduhn"
 #define MyAppURL "https://github.com/oliverbenduhn/MultiPingTUI"
 

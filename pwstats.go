@@ -18,6 +18,8 @@ type PWStats struct {
 	first_called       bool
 	has_ever_received  bool
 	startup_time       int64
+	last_compute       int64
+	uptime_nano        int64
 	transition_writer  *TransitionWriter
 	error_message      string
 	hrepr              string
@@ -25,11 +27,21 @@ type PWStats struct {
 }
 
 func (p *PWStats) ComputeState(timeout_threshold int64) {
+	now := time.Now().UnixNano()
 	if p.startup_time == 0 {
-		p.startup_time = time.Now().UnixNano()
+		p.startup_time = now
 	}
+	if p.last_compute == 0 {
+		p.last_compute = now
+	}
+
+	// accumulate uptime only while state was online since last compute
+	if p.state {
+		p.uptime_nano += now - p.last_compute
+	}
+
 	old_last_seen := p.last_seen_nano
-	p.last_seen_nano = time.Now().UnixNano() - p.lastrecv
+	p.last_seen_nano = now - p.lastrecv
 	new_state := p.last_seen_nano < timeout_threshold
 	// TODO: Algo to review completely
 
@@ -43,7 +55,6 @@ func (p *PWStats) ComputeState(timeout_threshold int64) {
 	}
 	if p.state != new_state {
 		var sb strings.Builder
-		now := time.Now()
 
 		var transition string
 		if new_state {
@@ -61,8 +72,8 @@ func (p *PWStats) ComputeState(timeout_threshold int64) {
 				Transition string
 				State      bool
 			}{
-				now.String(),
-				now.UnixNano(),
+				time.Unix(0, now).String(),
+				now,
 				p.hrepr,
 				p.iprepr,
 				transition,
@@ -77,4 +88,16 @@ func (p *PWStats) ComputeState(timeout_threshold int64) {
 	}
 
 	p.state = new_state
+	p.last_compute = now
+}
+
+func (p PWStats) OnlineUptime(now int64) time.Duration {
+	total := p.uptime_nano
+	if p.state {
+		total += now - p.last_compute
+	}
+	if total < 0 {
+		total = 0
+	}
+	return time.Duration(total)
 }

@@ -3,7 +3,7 @@
 MODULE=$(grep module go.mod | cut -d\  -f2)
 BINBASE="mping"
 VERSION=${VERSION:-$GITHUB_REF_NAME}
-VERSION=${VERSION:-v1.0.0}
+VERSION=${VERSION:-v1.0.2}
 PKG_VERSION=${VERSION#v}
 MAINTAINER=${MAINTAINER:-"oliverbenduhn"}
 COMMIT_HASH="$(git rev-parse --short HEAD 2>/dev/null)"

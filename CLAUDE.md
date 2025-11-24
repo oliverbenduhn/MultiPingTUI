@@ -35,7 +35,7 @@ go run . tcp://google.com:443 tcp://[::1]:22
 go run . 192.168.1.0/24
 
 # Legacy display mode (non-interactive, pterm-based)
-go run . -tui=false localhost google.com
+go run . -notui localhost google.com
 
 # System ping mode
 go run . -s localhost
@@ -47,10 +47,10 @@ go run . -q -log transitions.json google.com
 go run . -once 192.168.1.0/24
 
 # Legacy mode with filters: show only online hosts
-go run . -tui=false -only-online 192.168.1.0/24
+go run . -notui -only-online 192.168.1.0/24
 
 # Legacy mode with filters: show only offline hosts
-go run . -tui=false -only-offline 192.168.1.0/24
+go run . -notui -only-offline 192.168.1.0/24
 
 # Once mode with filters (e.g., find all online hosts in subnet)
 go run . -once -only-online 192.168.1.0/24
@@ -64,11 +64,10 @@ go run . -only-online localhost google.com
 When running in TUI mode (default):
 - `↑/↓` or `j/k` - Navigate through hosts
 - `Enter` - Toggle detailed view for selected host
-- `a` - Filter: show all hosts
-- `o` - Filter: show only online hosts
-- `f` - Filter: show only offline hosts
+- `f` - Cycle filter: smart (online or seen) → online → offline → all
+- `s` - Cycle sort: name → status → RTT → last seen
 - `n` - Sort by name
-- `s` - Sort by status
+- `S` - Sort by status
 - `r` - Sort by RTT
 - `Esc` - Back from detail view
 - `q` or `Ctrl+C` - Quit
@@ -112,7 +111,7 @@ No test files exist in the repository currently.
      - Real-time updates with color-coded status (✅/❌)
      - Shows RTT, last loss information, and error messages
      - Supports filtering: `SetFilter()` allows showing only online or offline hosts
-     - Enabled with `-tui=false` flag
+     - Enabled with `-notui` flag
 
 5. **Subnet Expansion & Once Mode** (subnet.go)
    - `ExpandCIDR()`: Parses CIDR notation and expands to individual IP addresses

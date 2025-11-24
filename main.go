@@ -1,14 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 )
 
-var Version = "v1.0.0"
+var Version = "v1.0.2"
 var CommitHash = "dev"
 var BuildTimestamp = "1970-01-01T00:00:00"
 var Builder = "go version go1.xx.y os/platform"
@@ -22,6 +24,8 @@ type Options struct {
 	update              *bool
 	system_ping_options *string
 	tui                 *bool
+	notui               *bool
+	hostfile            *string
 }
 
 func main() {
@@ -33,14 +37,29 @@ func main() {
 	options.quiet = flag.Bool("q", false, "quiet mode, disable live update")
 	options.log = flag.String("log", "", "transition log `filename`")
 	options.update = flag.Bool("update", false, "check and update to latest version (source github)")
-	options.tui = flag.Bool("tui", true, "use interactive TUI mode (default)")
+	options.tui = flag.Bool("tui", true, "use interactive TUI mode (default) (deprecated, use -notui)")
+	options.notui = flag.Bool("notui", false, "disable interactive TUI mode")
+	options.hostfile = flag.String("hostfile", "", "file with hosts (one per line, CIDR allowed)")
 	once := flag.Bool("once", false, "ping once and exit")
 	onlyOnline := flag.Bool("only-online", false, "show only online hosts (initial filter)")
 	onlyOffline := flag.Bool("only-offline", false, "show only offline hosts (initial filter)")
 	flag.Usage = usage
 	flag.Parse()
 
-	rawHosts := flag.Args()
+	if *options.notui {
+		*options.tui = false
+	}
+
+	var rawHosts []string
+	if *options.hostfile != "" {
+		fileHosts, err := loadHostsFromFile(*options.hostfile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error reading host file: %v\n", err)
+			os.Exit(1)
+		}
+		rawHosts = append(rawHosts, fileHosts...)
+	}
+	rawHosts = append(rawHosts, flag.Args()...)
 	var hosts []string
 
 	for _, arg := range rawHosts {
@@ -59,18 +78,22 @@ func main() {
 		return
 	}
 
-	if len(hosts) == 0 {
-		fmt.Println("no host provided")
-		return
-	}
-
 	if *once {
+		if len(hosts) == 0 {
+			fmt.Println("no host provided")
+			return
+		}
 		RunPingOnce(hosts, *onlyOnline, *onlyOffline)
 		return
 	}
 
 	if len(*options.system_ping_options) > 0 {
 		*options.system = true
+	}
+
+	if len(hosts) == 0 && !*options.tui {
+		fmt.Println("no host provided")
+		return
 	}
 
 	quitSig := make(chan bool)
@@ -146,7 +169,7 @@ func determineInitialFilter(onlyOnline, onlyOffline bool) FilterMode {
 	case onlyOffline && !onlyOnline:
 		return FilterOffline
 	default:
-		return FilterAll
+		return FilterSmart
 	}
 }
 
@@ -167,4 +190,26 @@ Hint on address family can be provided with the following form:
 - ip6://hostname and tcp6://hostname resolves as IPv6
 
 Notes about implementation: tcp implementation between probing (S/SA/R) and full handshake depends on the platform`)
+}
+
+func loadHostsFromFile(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var hosts []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		hosts = append(hosts, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return hosts, nil
 }

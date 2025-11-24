@@ -48,17 +48,17 @@ type tickMsg time.Time
 
 // keyMap defines the keyboard shortcuts
 type keyMap struct {
-	Up       key.Binding
-	Down     key.Binding
-	Enter    key.Binding
-	Quit     key.Binding
-	FilterAll key.Binding
-	FilterOnline key.Binding
+	Up            key.Binding
+	Down          key.Binding
+	Enter         key.Binding
+	Quit          key.Binding
+	FilterAll     key.Binding
+	FilterOnline  key.Binding
 	FilterOffline key.Binding
-	SortName key.Binding
-	SortStatus key.Binding
-	SortRTT key.Binding
-	Escape key.Binding
+	SortName      key.Binding
+	SortStatus    key.Binding
+	SortRTT       key.Binding
+	Escape        key.Binding
 }
 
 var keys = keyMap{
@@ -148,11 +148,15 @@ var (
 			MarginLeft(2)
 )
 
-func NewTUIModel(wh *WrapperHolder, tw *TransitionWriter) *TUIModel {
+func NewTUIModel(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode) *TUIModel {
+	if initialFilter != FilterOnline && initialFilter != FilterOffline {
+		initialFilter = FilterAll
+	}
+
 	return &TUIModel{
 		wh:               wh,
 		cursor:           0,
-		filterMode:       FilterAll,
+		filterMode:       initialFilter,
 		sortMode:         SortByName,
 		showDetails:      false,
 		transitionWriter: tw,
@@ -442,9 +446,9 @@ func (m *TUIModel) getSortModeString() string {
 	}
 }
 
-// RunTUI starts the TUI interface
-func RunTUI(wh *WrapperHolder, tw *TransitionWriter) error {
-	model := NewTUIModel(wh, tw)
+// RunTUI starts the TUI interface with an initial filter mode applied
+func RunTUI(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode) error {
+	model := NewTUIModel(wh, tw, initialFilter)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	wh.Start()

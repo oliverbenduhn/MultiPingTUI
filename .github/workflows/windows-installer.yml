@@ -1,0 +1,43 @@
+name: Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Go test
+        run: go test ./...
+
+      - name: Build Windows binary
+        shell: pwsh
+        run: |
+          mkdir dist
+          $env:CGO_ENABLED="0"
+          $env:GOOS="windows"
+          $env:GOARCH="amd64"
+          go build -trimpath -o dist/mping-windows-amd64.exe .
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Build installer
+        run: iscc windows\\mping.iss
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: mping-installer
+          path: dist/mping-setup.exe

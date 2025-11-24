@@ -2,7 +2,7 @@
 
 [![GitHub](https://img.shields.io/github/license/oliverbenduhn/MultiPingTUI)](https://github.com/oliverbenduhn/MultiPingTUI/blob/master/LICENSE)
 
-`MultiPingTUI` is an enhanced TUI (Terminal User Interface) version of multiping with interactive navigation, filtering, and detailed host statistics. It monitors multiple network targets simultaneously using pings or TCP probing with optional logging of state transitions.
+`MultiPingTUI` is an enhanced TUI (Terminal User Interface) version of multiping with interactive navigation, filtering, and detailed host statistics. It monitors multiple network targets simultaneously using pings or TCP probing with optional logging of state transitions. The CLI command/binary is `mping`.
 
 **Key Features:**
 - 🎨 **Interactive TUI** - Midnight Commander/Claude Code inspired interface
@@ -17,7 +17,7 @@
 
 **TUI Mode (default):**
 ```bash
-multipingtui localhost google.com 8.8.8.8
+mping localhost google.com 8.8.8.8
 ```
 
 **Keyboard Shortcuts:**
@@ -34,18 +34,18 @@ multipingtui localhost google.com 8.8.8.8
 
 **Subnet Scanning:**
 ```bash
-multipingtui 192.168.1.0/24
+mping 192.168.1.0/24
 ```
 
 **Legacy Display Mode:**
 ```bash
 # Use -tui=false to disable TUI mode
-multipingtui -tui=false localhost google.com
+mping -tui=false localhost google.com
 ```
 
 ## Documentation
 
-See `multipingtui -h` for detailed information.
+See `mping -h` for detailed information.
 
 ### Modes
 
@@ -107,11 +107,11 @@ Log format is pretty self explanatory:
 
 ### CIDR subnet scanning
 
-`multipingtui` automatically detects and expands CIDR notation (e.g., `192.168.1.0/24`) to ping all hosts in the subnet (excluding network and broadcast addresses).
+`mping` automatically detects and expands CIDR notation (e.g., `192.168.1.0/24`) to ping all hosts in the subnet (excluding network and broadcast addresses).
 
 Example:
 ```bash
-multipingtui 192.168.1.0/24
+mping 192.168.1.0/24
 ```
 
 Use filtering (`o` key) in TUI mode to quickly see which hosts are online.
@@ -121,25 +121,25 @@ Use filtering (`o` key) in TUI mode to quickly see which hosts are online.
 Use `-once` to ping each target once and exit, useful for scripting:
 
 ```bash
-multipingtui -once 192.168.1.0/24
+mping -once 192.168.1.0/24
 ```
 
-### Display filtering (Legacy Mode)
+### Display filtering
 
-In legacy display mode, filter the display to show only specific host states:
+Filter the display to show only specific host states:
 - `-only-online`: Show only hosts that are reachable
 - `-only-offline`: Show only hosts that are unreachable
 
 These work in both continuous and once mode:
 ```bash
 # Find all online hosts in subnet
-multipingtui -tui=false -once -only-online 192.168.1.0/24
+mping -tui=false -once -only-online 192.168.1.0/24
 
 # Monitor only offline hosts continuously
-multipingtui -tui=false -only-offline 192.168.1.1 192.168.1.2 192.168.1.3
+mping -tui=false -only-offline 192.168.1.1 192.168.1.2 192.168.1.3
 ```
 
-**Note:** In TUI mode, use keyboard shortcuts (`o`/`f`/`a`) for dynamic filtering instead.
+In TUI mode these flags set the initial filter when the UI opens; you can still toggle filters dynamically with `a`/`o`/`f`.
 
 ## Linux notes on pure go ping
 
@@ -174,7 +174,7 @@ Based on: https://github.com/babs/multiping
 
 ```bash
 # Standard build
-go build -o multipingtui
+go build -o mping
 
 # Build with release script (cross-platform, includes version info)
 ./release.sh

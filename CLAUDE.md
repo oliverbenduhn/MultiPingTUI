@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Standard build
-go build -o multipingtui
+go build -o mping
 
 # Build with release script (cross-platform, includes version info)
 ./release.sh
@@ -54,6 +54,9 @@ go run . -tui=false -only-offline 192.168.1.0/24
 
 # Once mode with filters (e.g., find all online hosts in subnet)
 go run . -once -only-online 192.168.1.0/24
+
+# TUI start with initial online-only filter
+go run . -only-online localhost google.com
 ```
 
 ### TUI Keyboard Shortcuts
@@ -83,7 +86,7 @@ No test files exist in the repository currently.
    - Supports two modes: continuous monitoring (default) and once mode (`-once` flag)
    - Manages quiet vs live display modes
    - Coordinates between WrapperHolder and Display
-   - Passes filter flags (`-only-online`, `-only-offline`) to Display for filtered output
+   - Passes filter flags (`-only-online`, `-only-offline`) to Display and TUI for filtered output/initial view
 
 2. **Ping Wrapper System** (Strategy Pattern)
    - `PingWrapperInterface`: Common interface for all ping implementations
@@ -170,7 +173,7 @@ No test files exist in the repository currently.
 
 ### Linux Privileges
 - Unprivileged mode requires: `sysctl -w net.ipv4.ping_group_range="0 2147483647"`
-- Privileged mode requires CAP_NET_RAW: `setcap cap_net_raw=+ep multiping`
+- Privileged mode requires CAP_NET_RAW: `setcap cap_net_raw=+ep mping`
 
 ### TCP Probing
 - Linux/FreeBSD/OpenBSD: Uses SYN/ACK probing (tcp-shaker)

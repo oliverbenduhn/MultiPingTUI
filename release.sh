@@ -1,14 +1,18 @@
 #!/bin/bash
 
 MODULE=$(grep module go.mod | cut -d\  -f2)
-BINBASE=${MODULE##*/}
+BINBASE="mping"
 VERSION=${VERSION:-$GITHUB_REF_NAME}
-VERSION=${VERSION:-0.0.0}
+VERSION=${VERSION:-v1.0.0}
+PKG_VERSION=${VERSION#v}
+MAINTAINER=${MAINTAINER:-"oliverbenduhn"}
 COMMIT_HASH="$(git rev-parse --short HEAD 2>/dev/null)"
 COMMIT_HASH=${COMMIT_HASH:-00000000}
 DIRTY=$(git diff --quiet 2>/dev/null || echo '-dirty')
 BUILD_TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 BUILDER=$(go version)
+HOST_GOOS=$(go env GOOS)
+HOST_GOARCH=$(go env GOARCH)
 
 [ -d dist ] && rm -rf dist
 mkdir dist
@@ -32,9 +36,9 @@ echo  "   Builder=${BUILDER}"
 #go get .
 
 echo "[*] go builds:"
+TARGETS="linux/amd64 windows/amd64"
 #set -x
-for DIST in {linux,openbsd,freebsd,windows}/{amd64,arm,arm64,386} darwin/{amd64,arm64}; do
-#for DIST in linux/{amd64,386}; do
+for DIST in $TARGETS; do
   GOOS=${DIST%/*}
   GOARCH=${DIST#*/}
   echo "[+]   $DIST:"
@@ -43,6 +47,24 @@ for DIST in {linux,openbsd,freebsd,windows}/{amd64,arm,arm64,386} darwin/{amd64,
   [ "$GOOS" = "windows" ] && SUFFIX=".exe"
   TARGET=${BINBASE}-${GOOS}-${GOARCH}
   env CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="${LDFLAGS[*]}" -mod vendor -o dist/${TARGET}${SUFFIX}
+  if [ "$GOOS" = "linux" ] && [ "$GOARCH" = "amd64" ]; then
+    echo "[-]    - build .deb"
+    PKG_STAGING="dist/deb-staging"
+    rm -rf "${PKG_STAGING}"
+    mkdir -p "${PKG_STAGING}/DEBIAN" "${PKG_STAGING}/usr/bin"
+    cp dist/${TARGET}${SUFFIX} "${PKG_STAGING}/usr/bin/${BINBASE}${SUFFIX}"
+    cat > "${PKG_STAGING}/DEBIAN/control" <<EOF
+Package: ${BINBASE}
+Version: ${PKG_VERSION}
+Section: net
+Priority: optional
+Architecture: amd64
+Maintainer: ${MAINTAINER}
+Description: MultiPingTUI CLI (${BINBASE}) - multi-host ping/TCP probe TUI
+EOF
+    dpkg-deb --build "${PKG_STAGING}" "dist/${BINBASE}_${PKG_VERSION}_amd64.deb"
+    rm -rf "${PKG_STAGING}"
+  fi
   (cd dist; sha256sum ${TARGET}${SUFFIX}) | tee -a ${BINBASE}.sha256sum
   if [ -z "$NOCOMPRESS" ]; then
     echo "[-]    - compress"

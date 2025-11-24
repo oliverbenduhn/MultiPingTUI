@@ -22,7 +22,7 @@ func selfUpdate() {
 
 	selfupdate_options := selfupdate.Options{}
 
-	resp, err := http.Get("https://api.github.com/repos/babs/multiping/releases/latest")
+	resp, err := http.Get("https://api.github.com/repos/oliverbenduhn/MultiPingTUI/releases/latest")
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -62,7 +62,7 @@ func selfUpdate() {
 		ext = "exe.xz"
 	}
 
-	download_link := fmt.Sprintf("https://github.com/babs/multiping/releases/download/%v/multiping-%v-%v.%v", latest_release, runtime.GOOS, runtime.GOARCH, ext)
+	download_link := fmt.Sprintf("https://github.com/oliverbenduhn/MultiPingTUI/releases/download/%v/mping-%v-%v.%v", latest_release, runtime.GOOS, runtime.GOARCH, ext)
 
 	err = selfupdate_options.CheckPermissions()
 	if err != nil {
@@ -84,7 +84,7 @@ func selfUpdate() {
 
 	err = selfupdate.Apply(r, selfupdate_options)
 	if err == nil {
-		log.Println("upgrade complete, happy mutliping-ing :-)")
+		log.Println("upgrade complete, happy mping-ing :-)")
 	} else {
 		log.Fatalf("unable to upgrade: %v", err)
 	}

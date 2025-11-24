@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var Version = "v0.0.0"
+var Version = "v1.0.0"
 var CommitHash = "dev"
 var BuildTimestamp = "1970-01-01T00:00:00"
 var Builder = "go version go1.xx.y os/platform"
@@ -35,8 +35,8 @@ func main() {
 	options.update = flag.Bool("update", false, "check and update to latest version (source github)")
 	options.tui = flag.Bool("tui", true, "use interactive TUI mode (default)")
 	once := flag.Bool("once", false, "ping once and exit")
-	onlyOnline := flag.Bool("only-online", false, "show only online hosts (once mode)")
-	onlyOffline := flag.Bool("only-offline", false, "show only offline hosts (once mode)")
+	onlyOnline := flag.Bool("only-online", false, "show only online hosts (initial filter)")
+	onlyOffline := flag.Bool("only-offline", false, "show only offline hosts (initial filter)")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -87,7 +87,8 @@ func main() {
 
 	// TUI mode (default, interactive)
 	if *options.tui && !*options.quiet {
-		err := RunTUI(wh, transition_writer)
+		initialFilter := determineInitialFilter(*onlyOnline, *onlyOffline)
+		err := RunTUI(wh, transition_writer, initialFilter)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
 			os.Exit(1)
@@ -131,11 +132,22 @@ func main() {
 }
 
 func VersionString() string {
-	return fmt.Sprintf("multiping %v-%v\n", Version, CommitHash)
+	return fmt.Sprintf("mping %v-%v\n", Version, CommitHash)
 }
 
 func VersionStringLong() string {
-	return fmt.Sprintf("multipingTUI %v-%v (build on %v using %v)\nhttps://github.com/oliverbenduhn/MultiPingTUI\n\n", Version, CommitHash, BuildTimestamp, Builder)
+	return fmt.Sprintf("mping %v-%v (MultiPingTUI, built on %v using %v)\nhttps://github.com/oliverbenduhn/MultiPingTUI\n\n", Version, CommitHash, BuildTimestamp, Builder)
+}
+
+func determineInitialFilter(onlyOnline, onlyOffline bool) FilterMode {
+	switch {
+	case onlyOnline && !onlyOffline:
+		return FilterOnline
+	case onlyOffline && !onlyOnline:
+		return FilterOffline
+	default:
+		return FilterAll
+	}
 }
 
 func usage() {

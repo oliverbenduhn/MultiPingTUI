@@ -28,7 +28,7 @@ type TCPPingWrapper struct {
 func (w *TCPPingWrapper) Start() {
 	displayHost := hostDisplayName(w.host, w.ip)
 	w.hstring = fmt.Sprintf("tcp://%v:%v (%v:%v)", displayHost, w.port, w.ip.String(), w.port)
-	w.stats.hrepr = fmt.Sprintf("tcp://%v:%v", w.host, w.port)
+	w.stats.hrepr = fmt.Sprintf("tcp://%v:%v", displayHost, w.port)
 	w.stats.iprepr = w.ip.IP.String()
 
 	if strings.Contains(w.stats.iprepr, ":") {

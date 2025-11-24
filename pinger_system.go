@@ -30,7 +30,7 @@ var time_extractor_non_local = regexp.MustCompile(`[=<]([\d\.]+) *(.?s)`)
 func (w *SystemPingWrapper) Start() {
 	displayHost := hostDisplayName(w.host, w.ip)
 	w.hstring = fmt.Sprintf("%s (%s)", displayHost, w.ip.String())
-	w.stats.hrepr = w.host
+	w.stats.hrepr = displayHost
 	w.stats.iprepr = w.ip.String()
 
 	var path string

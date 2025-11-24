@@ -7,23 +7,26 @@ import (
 )
 
 type PWStats struct {
-	lastsent           int64
-	lastrecv           int64
-	lastrtt            time.Duration
-	lastrtt_as_string  string
-	last_loss_nano     int64
-	last_loss_duration int64
-	last_seen_nano     int64
-	state              bool
-	first_called       bool
-	has_ever_received  bool
-	startup_time       int64
-	last_compute       int64
-	uptime_nano        int64
-	transition_writer  *TransitionWriter
-	error_message      string
-	hrepr              string
-	iprepr             string
+	lastsent               int64
+	lastrecv               int64
+	lastrtt                time.Duration
+	lastrtt_as_string      string
+	last_loss_nano         int64
+	last_loss_duration     int64
+	last_seen_nano         int64
+	state                  bool
+	first_called           bool
+	has_ever_received      bool
+	state_initialized      bool
+	skip_next_up_highlight bool
+	last_up_transition     int64
+	startup_time           int64
+	last_compute           int64
+	uptime_nano            int64
+	transition_writer      *TransitionWriter
+	error_message          string
+	hrepr                  string
+	iprepr                 string
 }
 
 func (p *PWStats) ComputeState(timeout_threshold int64) {
@@ -35,17 +38,35 @@ func (p *PWStats) ComputeState(timeout_threshold int64) {
 		p.last_compute = now
 	}
 
-	// accumulate uptime only while state was online since last compute
-	if p.state {
-		p.uptime_nano += now - p.last_compute
-	}
+	prevState := p.state
+	prevSeen := p.state_initialized
 
 	old_last_seen := p.last_seen_nano
 	p.last_seen_nano = now - p.lastrecv
 	new_state := p.last_seen_nano < timeout_threshold
 	// TODO: Algo to review completely
 
-	if !p.state && new_state {
+	if !prevSeen {
+		// First observation initializes baseline without marking transitions or highlights
+		p.state_initialized = true
+		p.skip_next_up_highlight = true
+		p.state = new_state
+		p.last_compute = now
+		return
+	}
+
+	// accumulate uptime only while state was online since last compute
+	if prevState {
+		p.uptime_nano += now - p.last_compute
+	}
+
+	if !prevState && new_state {
+		if p.skip_next_up_highlight {
+			// Consume the initial transition without highlighting
+			p.skip_next_up_highlight = false
+		} else {
+			p.last_up_transition = now
+		}
 		if p.first_called {
 			p.last_loss_nano = time.Now().UnixNano()
 			p.last_loss_duration = old_last_seen

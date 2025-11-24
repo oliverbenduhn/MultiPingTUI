@@ -34,6 +34,12 @@ go run . tcp://google.com:443 tcp://[::1]:22
 # With CIDR expansion (automatically expands subnets)
 go run . 192.168.1.0/24
 
+# Skip DNS lookups for faster startup on large subnets
+go run . -no-dns 192.168.1.0/24
+
+# Debug mode (shows startup progress and DNS resolution)
+go run . -debug 192.168.1.0/24
+
 # Legacy display mode (non-interactive, pterm-based)
 go run . -notui localhost google.com
 
@@ -62,15 +68,18 @@ go run . -only-online localhost google.com
 ### TUI Keyboard Shortcuts
 
 When running in TUI mode (default):
-- `↑/↓` or `j/k` - Navigate through hosts
+- `↑/↓` or `j/k` - Navigate through hosts (cursor starts unselected, first keypress selects first host)
 - `Enter` - Toggle detailed view for selected host
 - `f` - Cycle filter: smart (online or seen) → online → offline → all
-- `s` - Cycle sort: name → status → RTT → last seen
-- `n` - Sort by name
-- `S` - Sort by status
-- `r` - Sort by RTT
-- `Esc` - Back from detail view
+- `s` - Cycle sort: name → status → RTT → last seen → IP (default: IP)
+- `e` - Edit hosts (add/remove hosts, supports CIDR notation)
+- `Esc` - Back from detail view or cancel edit mode
 - `q` or `Ctrl+C` - Quit
+
+**Scrolling:**
+- Automatic scrolling when navigating beyond visible area
+- Scroll indicator shows `[start-end/total]` when list is longer than screen
+- Viewport automatically adjusts to keep selected host visible
 
 ### Testing
 
@@ -86,6 +95,7 @@ No test files exist in the repository currently.
    - Manages quiet vs live display modes
    - Coordinates between WrapperHolder and Display
    - Passes filter flags (`-only-online`, `-only-offline`) to Display and TUI for filtered output/initial view
+   - Global flags: `DebugMode` (enables debug output), `SkipDNS` (disables reverse DNS lookups)
 
 2. **Ping Wrapper System** (Strategy Pattern)
    - `PingWrapperInterface`: Common interface for all ping implementations
@@ -97,14 +107,28 @@ No test files exist in the repository currently.
 
 3. **State Management**
    - `PWStats` (pwstats.go): Tracks ping statistics and computes state transitions
-   - `WrapperHolder` (wrapperholder.go): Manages collection of ping wrappers
+   - `WrapperHolder` (wrapperholder.go): Manages collection of ping wrappers with staggered/parallel startup
    - `TransitionWriter` (transitionwriter.go): Thread-safe buffered JSON logger for state changes
+
+3a. **DNS Resolution** (host_display.go)
+   - `hostDisplayName()`: Performs reverse DNS lookups for IP addresses
+   - Uses 500ms timeout to prevent blocking on slow/non-existent PTR records
+   - Can be completely disabled with `-no-dns` flag for instant startup on large subnets
+   - Runs in parallel during wrapper startup (20 concurrent lookups)
 
 4. **Display Layer (Two Modes)**
    - **TUI Mode** (tui.go): Interactive bubbletea-based TUI (default)
      - Full keyboard navigation with arrow keys and vim-style keys
-     - Live filtering (all/online/offline) with `a`/`o`/`f` keys
-     - Sorting by name, status, or RTT with `n`/`s`/`r` keys
+     - No initial selection (cursor = -1), first navigation key selects first host
+     - Live filtering: smart (online or seen) → online → offline → all
+     - Sorting: name → status → RTT → last seen → IP (default: IP)
+       - Name sort: Uses reverse DNS names, offline hosts at end
+       - Status sort: Online first, then by name
+       - RTT sort: Online hosts by RTT, offline at end
+       - Last Seen sort: Offline first, then by loss history, stable hosts at end (sorted by name)
+       - IP sort: Numeric IP comparison (IPv4/IPv6 aware)
+     - Scrolling support: Viewport with scroll indicator for large host lists
+     - Edit mode (`e` key): Add/remove hosts dynamically, supports CIDR
      - Detail view with `Enter` key showing comprehensive host statistics
      - Styled with lipgloss for a modern terminal look
    - **Legacy Display Mode** (display.go): Non-interactive pterm-based display
@@ -137,6 +161,9 @@ No test files exist in the repository currently.
 
 **Continuous Monitoring Mode:**
 - Each ping wrapper runs in its own goroutine
+- Wrapper startup is parallelized with semaphore limiting (20 concurrent starts)
+- Small delays (1ms every 10 hosts) prevent ARP/ICMP storms on large subnets
+- DNS lookups run in parallel with 500ms timeout per lookup
 - System ping wrappers read stdout line-by-line in separate goroutines
 - TCP ping spawns a checker goroutine every second
 - TransitionWriter has a flush goroutine running every 500ms
@@ -214,10 +241,12 @@ The Display layer supports filtering visible hosts:
 The TUI follows the Elm/Bubbletea architecture:
 
 1. **Model** (`TUIModel`): Holds all application state
-   - Current cursor position
-   - Filter mode (All/Online/Offline)
-   - Sort mode (Name/Status/RTT)
+   - Current cursor position (starts at -1, no initial selection)
+   - Scroll offset for viewport management
+   - Filter mode (Smart/All/Online/Offline)
+   - Sort mode (Name/Status/RTT/LastSeen/IP, default: IP)
    - Detail view toggle
+   - Edit mode state and input buffer
    - Reference to `WrapperHolder` for ping data
 
 2. **Update** (`Update(msg tea.Msg)`): Handles all messages
@@ -246,12 +275,47 @@ To add a new filter or sort mode:
 3. Add key binding and update handler
 4. Update display strings in `getFilterModeString()` or `getSortModeString()`
 
+## Performance Optimizations
+
+### Large Subnet Scanning
+
+When scanning large subnets (e.g., /24 = 254 hosts), several optimizations prevent system overload:
+
+1. **Staggered Startup** (wrapperholder.go:69-96)
+   - Parallel wrapper initialization with semaphore (20 concurrent)
+   - 1ms delay every 10 hosts prevents ARP table overflow
+   - Total startup time for 254 hosts: ~7 seconds (with DNS) or <1 second (without DNS)
+
+2. **DNS Lookup Optimization** (host_display.go)
+   - 500ms timeout per lookup prevents indefinite blocking
+   - Parallel execution (20 concurrent lookups)
+   - `-no-dns` flag completely disables reverse DNS for instant startup
+   - Useful when DNS server is slow or PTR records are missing
+
+3. **Viewport Rendering** (tui.go:326-398)
+   - Only renders visible hosts based on terminal height
+   - Scroll offset management prevents rendering all 254+ hosts
+   - Significantly reduces CPU/memory usage for large lists
+
+4. **Smart Filtering** (tui.go:465-495)
+   - Default "Smart" filter shows only online or previously-seen hosts
+   - Reduces clutter when scanning large subnets with many unused IPs
+   - Can be toggled to show all hosts
+
+### Troubleshooting Slow Startup
+
+If startup is slow on your local subnet:
+- **Problem**: Reverse DNS lookups timing out (10+ seconds per IP)
+- **Cause**: Missing PTR records or DNS server issues
+- **Solution**: Use `-no-dns` flag to skip DNS lookups entirely
+- **Debug**: Use `-debug` flag to see which IPs are causing delays
+
 ## File Structure
 
 ```
 MultiPingTUI/
-├── main.go                    # Entry point, CLI, mode selection
-├── tui.go                     # Interactive TUI (bubbletea)
+├── main.go                    # Entry point, CLI, mode selection, global flags
+├── tui.go                     # Interactive TUI (bubbletea) with scrolling
 ├── display.go                 # Legacy terminal UI (pterm)
 ├── pingwrapper.go             # Factory and interface
 ├── pinger_probing.go          # Pure Go ICMP
@@ -259,8 +323,9 @@ MultiPingTUI/
 ├── pinger_tcp.go              # TCP probing (non-Windows)
 ├── pinger_tcp_win.go          # TCP probing (Windows)
 ├── pwstats.go                 # Statistics and state tracking
-├── wrapperholder.go           # Collection manager
+├── wrapperholder.go           # Collection manager with parallel startup
 ├── transitionwriter.go        # JSON logger
+├── host_display.go            # Reverse DNS with timeout
 ├── subnet.go                  # CIDR expansion and once mode
 ├── selfupdate.go              # GitHub release updater
 ├── release.sh                 # Cross-platform build script

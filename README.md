@@ -24,7 +24,7 @@ mping localhost google.com 8.8.8.8
 - `↑/↓` or `j/k` - Navigate through hosts
 - `Enter` - Show detailed view for selected host
 - `f` - Cycle filter: smart (online or seen) → online → offline → all
-- `s` - Cycle sort: name → status → RTT → last seen
+- `s` - Cycle sort: name → status → RTT (round-trip time) → last seen → IP
 - `e` - Edit host list (replace hosts while running)
 - `n` - Sort by name
 - `S` - Sort by status

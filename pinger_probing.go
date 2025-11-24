@@ -34,6 +34,7 @@ func (w *ProbingWrapper) Start() {
 	w.pinger.OnRecv = w.onRecv
 	w.pinger.OnDuplicateRecv = w.onDuplicateRecv
 	w.pinger.Size = w.size
+	w.pinger.Debug = DebugMode
 	if runtime.GOOS == "linux" {
 		w.pinger.SetDoNotFragment(true)
 	}
@@ -44,10 +45,19 @@ func (w *ProbingWrapper) Start() {
 		w.pinger.SetPrivileged(w.privileged)
 	}
 
+	if DebugMode {
+		fmt.Fprintf(os.Stderr, "DEBUG: Starting wrapper for %s, resolving DNS...\n", w.ip.String())
+	}
+
 	displayHost := hostDisplayName(w.host, w.ip)
+
+	if DebugMode {
+		fmt.Fprintf(os.Stderr, "DEBUG: Resolved %s -> %s\n", w.ip.String(), displayHost)
+	}
+
 	w.hstring = fmt.Sprintf("%s (%s)", displayHost, w.ip.String())
 
-	w.stats.hrepr = w.host
+	w.stats.hrepr = displayHost
 	w.stats.iprepr = w.ip.IP.String()
 
 	go func(w *ProbingWrapper) {

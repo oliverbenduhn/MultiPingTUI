@@ -1,6 +1,11 @@
 package main
 
-import "sync"
+import (
+	"fmt"
+	"os"
+	"sync"
+	"time"
+)
 
 type WrapperHolder struct {
 	ping_wrappers     []PingWrapperInterface
@@ -37,8 +42,13 @@ func (w *WrapperHolder) ReplaceHosts(hosts []string) {
 	for _, pw := range old {
 		pw.Stop()
 	}
-	for _, pw := range newWrappers {
+
+	// Staggered start for new wrappers
+	for i, pw := range newWrappers {
 		pw.Start()
+		if i >= 10 && i < len(newWrappers)-1 {
+			time.Sleep(1 * time.Millisecond)
+		}
 	}
 }
 
@@ -57,8 +67,41 @@ func (w *WrapperHolder) CalcStats(timeout_threshold int64) {
 }
 
 func (w *WrapperHolder) Start() {
-	for _, ping_wrapper := range w.Wrappers() {
-		ping_wrapper.Start()
+	wrappers := w.Wrappers()
+
+	if DebugMode {
+		fmt.Fprintf(os.Stderr, "DEBUG: Starting %d ping wrappers (parallel DNS lookups, staggered start)\n", len(wrappers))
+	}
+
+	// Start wrappers in parallel goroutines to avoid blocking on DNS lookups
+	// Use a semaphore to limit concurrency for ARP/ICMP storm prevention
+	sem := make(chan struct{}, 20) // Allow 20 concurrent starts
+	var wg sync.WaitGroup
+
+	for i, ping_wrapper := range wrappers {
+		wg.Add(1)
+		go func(idx int, pw PingWrapperInterface) {
+			defer wg.Done()
+			sem <- struct{}{}        // Acquire
+			defer func() { <-sem }() // Release
+
+			if DebugMode && idx > 0 && idx%50 == 0 {
+				fmt.Fprintf(os.Stderr, "DEBUG: Starting wrapper %d/%d\n", idx, len(wrappers))
+			}
+
+			pw.Start()
+		}(i, ping_wrapper)
+
+		// Small delay to avoid overwhelming the system at startup
+		if i >= 10 && i < len(wrappers)-1 && i%10 == 0 {
+			time.Sleep(1 * time.Millisecond)
+		}
+	}
+
+	wg.Wait()
+
+	if DebugMode {
+		fmt.Fprintf(os.Stderr, "DEBUG: All %d wrappers started successfully\n", len(wrappers))
 	}
 }
 

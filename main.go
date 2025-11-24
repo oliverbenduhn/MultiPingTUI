@@ -14,6 +14,8 @@ var Version = "v1.0.2"
 var CommitHash = "dev"
 var BuildTimestamp = "1970-01-01T00:00:00"
 var Builder = "go version go1.xx.y os/platform"
+var DebugMode = false
+var SkipDNS = false
 
 type Options struct {
 	quiet               *bool
@@ -43,8 +45,18 @@ func main() {
 	once := flag.Bool("once", false, "ping once and exit")
 	onlyOnline := flag.Bool("only-online", false, "show only online hosts (initial filter)")
 	onlyOffline := flag.Bool("only-offline", false, "show only offline hosts (initial filter)")
+	debug := flag.Bool("debug", false, "enable debug output")
+	noDNS := flag.Bool("no-dns", false, "skip reverse DNS lookups (faster startup for large subnets)")
 	flag.Usage = usage
 	flag.Parse()
+
+	if *debug {
+		DebugMode = true
+	}
+
+	if *noDNS {
+		SkipDNS = true
+	}
 
 	if *options.notui {
 		*options.tui = false
@@ -66,11 +78,18 @@ func main() {
 		// Try to expand as CIDR
 		ips, err := ExpandCIDR(arg)
 		if err == nil {
+			if DebugMode {
+				fmt.Fprintf(os.Stderr, "DEBUG: Expanded %s to %d IPs\n", arg, len(ips))
+			}
 			hosts = append(hosts, ips...)
 		} else {
 			// Not a CIDR, treat as single host
 			hosts = append(hosts, arg)
 		}
+	}
+
+	if DebugMode {
+		fmt.Fprintf(os.Stderr, "DEBUG: Total hosts to ping: %d\n", len(hosts))
 	}
 
 	if *options.update {

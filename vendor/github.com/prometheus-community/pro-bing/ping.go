@@ -61,6 +61,7 @@ import (
 	"math/rand"
 	"net"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -79,6 +80,9 @@ const (
 	protocolICMP     = 1
 	protocolIPv6ICMP = 58
 )
+
+const maxICMPMessageSize = 1 << 16
+const wsaEMSGSIZE = syscall.Errno(10040) // Windows WSAEMSGSIZE
 
 var (
 	ipv4Proto = map[string]string{"icmp": "ip4:icmp", "udp": "udp4"}
@@ -630,6 +634,26 @@ func newExpBackoff(baseDelay time.Duration, maxExp int64) expBackoff {
 	return expBackoff{baseDelay: baseDelay, maxExp: maxExp}
 }
 
+func isMsgSizeError(err error) bool {
+	if errors.Is(err, syscall.EMSGSIZE) {
+		return true
+	}
+	// Windows returns WSAEMSGSIZE (Errno 10040)
+	if errors.Is(err, wsaEMSGSIZE) {
+		return true
+	}
+	if netErr, ok := err.(*net.OpError); ok {
+		if errors.Is(netErr.Err, syscall.EMSGSIZE) || errors.Is(netErr.Err, wsaEMSGSIZE) {
+			return true
+		}
+	}
+	// Last resort: match common substring if the platform wraps differently.
+	if strings.Contains(strings.ToLower(err.Error()), "message") && strings.Contains(strings.ToLower(err.Error()), "too large") {
+		return true
+	}
+	return false
+}
+
 func (p *Pinger) recvICMP(
 	conn packetConn,
 	recv chan<- *packet,
@@ -644,21 +668,49 @@ func (p *Pinger) recvICMP(
 		offset = 20
 	}
 
+	readBufLen := p.getMessageLength() + offset
+	if runtime.GOOS == "windows" {
+		// Windows ICMP can emit larger payloads; start with a generous buffer.
+		readBufLen = maxICMPMessageSize
+	}
+	if readBufLen > maxICMPMessageSize {
+		readBufLen = maxICMPMessageSize
+	}
+	if readBufLen <= 0 {
+		readBufLen = maxICMPMessageSize
+	}
+	readBuf := make([]byte, readBufLen)
+
 	for {
 		select {
 		case <-p.done:
 			return nil
 		default:
-			bytes := make([]byte, p.getMessageLength()+offset)
 			if err := conn.SetReadDeadline(time.Now().Add(delay)); err != nil {
 				return err
 			}
 			var n, ttl int
 			var err error
-			n, ttl, _, err = conn.ReadFrom(bytes)
+			n, ttl, _, err = conn.ReadFrom(readBuf)
 			if err != nil {
 				if p.OnRecvError != nil {
 					p.OnRecvError(err)
+				}
+				if isMsgSizeError(err) {
+					if p.Debug {
+						p.logger.Warnf("recvICMP(%s): message too large for buffer (%d bytes), err=%v", p.addr, len(readBuf), err)
+					}
+					if len(readBuf) < maxICMPMessageSize {
+						newLen := len(readBuf) * 2
+						if newLen > maxICMPMessageSize {
+							newLen = maxICMPMessageSize
+						}
+						readBuf = make([]byte, newLen)
+						if p.Debug {
+							p.logger.Debugf("recvICMP(%s): increased read buffer to %d bytes", p.addr, len(readBuf))
+						}
+					}
+					continue
 				}
 				if neterr, ok := err.(*net.OpError); ok {
 					if neterr.Timeout() {
@@ -667,13 +719,17 @@ func (p *Pinger) recvICMP(
 						continue
 					}
 				}
+				if p.Debug {
+					p.logger.Warnf("recvICMP(%s): read error with buffer %d: %v", p.addr, len(readBuf), err)
+				}
 				return err
 			}
 
+			pktBytes := append([]byte(nil), readBuf[:n]...)
 			select {
 			case <-p.done:
 				return nil
-			case recv <- &packet{bytes: bytes, nbytes: n, ttl: ttl}:
+			case recv <- &packet{bytes: pktBytes, nbytes: n, ttl: ttl}:
 			}
 		}
 	}

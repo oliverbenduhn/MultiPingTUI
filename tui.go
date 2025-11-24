@@ -6,9 +6,11 @@ import (
 	"strings"
 	"time"
 
+	"bytes"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"net"
 )
 
 // FilterMode represents the current filter state
@@ -29,12 +31,14 @@ const (
 	SortByStatus
 	SortByRTT
 	SortByLastSeen
+	SortByIP
 )
 
 // TUIModel is the bubbletea model for the TUI
 type TUIModel struct {
 	wh               *WrapperHolder
 	cursor           int
+	scrollOffset     int
 	filterMode       FilterMode
 	sortMode         SortMode
 	showDetails      bool
@@ -45,6 +49,7 @@ type TUIModel struct {
 	editingHosts     bool
 	hostInput        string
 	statusMessage    string
+	hiddenHosts      map[string]bool // tracks hidden hosts by Host() name
 }
 
 // tickMsg is sent every 100ms to update the display
@@ -54,12 +59,16 @@ type tickMsg time.Time
 type keyMap struct {
 	Up          key.Binding
 	Down        key.Binding
+	PageUp      key.Binding
+	PageDown    key.Binding
 	Enter       key.Binding
 	Quit        key.Binding
 	FilterCycle key.Binding
 	SortCycle   key.Binding
 	Escape      key.Binding
 	EditHosts   key.Binding
+	HideHost    key.Binding
+	ShowAll     key.Binding
 }
 
 var keys = keyMap{
@@ -70,6 +79,14 @@ var keys = keyMap{
 	Down: key.NewBinding(
 		key.WithKeys("down", "j"),
 		key.WithHelp("↓/j", "down"),
+	),
+	PageUp: key.NewBinding(
+		key.WithKeys("pgup"),
+		key.WithHelp("pgup", "page up"),
+	),
+	PageDown: key.NewBinding(
+		key.WithKeys("pgdown"),
+		key.WithHelp("pgdown", "page down"),
 	),
 	Enter: key.NewBinding(
 		key.WithKeys("enter"),
@@ -95,6 +112,14 @@ var keys = keyMap{
 		key.WithKeys("e"),
 		key.WithHelp("e", "edit hosts"),
 	),
+	HideHost: key.NewBinding(
+		key.WithKeys("delete"),
+		key.WithHelp("del", "hide host"),
+	),
+	ShowAll: key.NewBinding(
+		key.WithKeys("insert"),
+		key.WithHelp("ins", "show all"),
+	),
 }
 
 // Styles
@@ -115,8 +140,9 @@ var (
 			Background(lipgloss.Color("12")).
 			Bold(true)
 
-	normalStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252"))
+	newOnlineStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("33")).
+			Bold(true)
 
 	onlineStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("46")).
@@ -144,11 +170,13 @@ func NewTUIModel(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMo
 
 	return &TUIModel{
 		wh:               wh,
-		cursor:           0,
+		cursor:           -1,
+		scrollOffset:     0,
 		filterMode:       initialFilter,
-		sortMode:         SortByName,
+		sortMode:         SortByIP,
 		showDetails:      false,
 		transitionWriter: tw,
+		hiddenHosts:      make(map[string]bool),
 	}
 }
 
@@ -225,29 +253,107 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case key.Matches(msg, keys.Enter):
-			m.showDetails = !m.showDetails
+			if m.cursor >= 0 {
+				m.showDetails = !m.showDetails
+			}
 			return m, nil
 
 		case key.Matches(msg, keys.Up):
-			if m.cursor > 0 {
-				m.cursor--
+			filtered := m.getFilteredWrappers()
+			if len(filtered) > 0 {
+				if m.cursor < 0 {
+					m.cursor = 0
+				} else if m.cursor > 0 {
+					m.cursor--
+				}
+				m.adjustScroll()
 			}
 			return m, nil
 
 		case key.Matches(msg, keys.Down):
 			filtered := m.getFilteredWrappers()
-			if m.cursor < len(filtered)-1 {
-				m.cursor++
+			if len(filtered) > 0 {
+				if m.cursor < 0 {
+					m.cursor = 0
+				} else if m.cursor < len(filtered)-1 {
+					m.cursor++
+				}
+				m.adjustScroll()
+			}
+			return m, nil
+
+		case key.Matches(msg, keys.PageUp):
+			filtered := m.getFilteredWrappers()
+			if len(filtered) > 0 {
+				visibleLines := m.height - 7
+				if visibleLines < 1 {
+					visibleLines = 1
+				}
+				if m.cursor < 0 {
+					m.cursor = 0
+				} else {
+					m.cursor -= visibleLines
+					if m.cursor < 0 {
+						m.cursor = 0
+					}
+				}
+				m.adjustScroll()
+			}
+			return m, nil
+
+		case key.Matches(msg, keys.PageDown):
+			filtered := m.getFilteredWrappers()
+			if len(filtered) > 0 {
+				visibleLines := m.height - 7
+				if visibleLines < 1 {
+					visibleLines = 1
+				}
+				if m.cursor < 0 {
+					m.cursor = 0
+				} else {
+					m.cursor += visibleLines
+					if m.cursor >= len(filtered) {
+						m.cursor = len(filtered) - 1
+					}
+				}
+				m.adjustScroll()
 			}
 			return m, nil
 
 		case key.Matches(msg, keys.FilterCycle):
 			m.filterMode = nextFilterMode(m.filterMode)
-			m.cursor = 0
+			m.cursor = -1
+			m.scrollOffset = 0
 			return m, nil
 
 		case key.Matches(msg, keys.SortCycle):
 			m.sortMode = nextSortMode(m.sortMode)
+			return m, nil
+
+		case key.Matches(msg, keys.HideHost):
+			if m.cursor >= 0 && !m.showDetails {
+				filtered := m.getFilteredWrappers()
+				if m.cursor < len(filtered) {
+					hostToHide := filtered[m.cursor].Host()
+					m.hiddenHosts[hostToHide] = true
+					m.statusMessage = fmt.Sprintf("Hidden: %s (press INS to show all)", hostToHide)
+					// Move cursor to next visible item or previous if at end
+					if m.cursor >= len(filtered)-1 && m.cursor > 0 {
+						m.cursor--
+					}
+					m.adjustScroll()
+				}
+			}
+			return m, nil
+
+		case key.Matches(msg, keys.ShowAll):
+			if len(m.hiddenHosts) > 0 {
+				count := len(m.hiddenHosts)
+				m.hiddenHosts = make(map[string]bool)
+				m.statusMessage = fmt.Sprintf("Showing all hosts (%d unhidden)", count)
+			} else {
+				m.statusMessage = "No hidden hosts"
+			}
 			return m, nil
 
 		case key.Matches(msg, keys.EditHosts):
@@ -299,7 +405,7 @@ func (m *TUIModel) View() string {
 	// Get filtered and sorted wrappers
 	filtered := m.getFilteredWrappers()
 
-	if m.showDetails && len(filtered) > 0 {
+	if m.showDetails && m.cursor >= 0 && m.cursor < len(filtered) {
 		// Show detail view
 		s.WriteString(m.renderDetailView(filtered[m.cursor]))
 	} else {
@@ -314,7 +420,7 @@ func (m *TUIModel) View() string {
 	} else {
 		s.WriteString(helpStyle.Render("↑↓/jk: navigate │ enter: details │ e: edit hosts │ q: quit"))
 		s.WriteString("\n")
-		s.WriteString(helpStyle.Render("f: cycle filters (smart/online/offline/all) │ s: cycle sort (name/status/rtt/last)"))
+		s.WriteString(helpStyle.Render("f: cycle filters (smart/online/offline/all) │ s: cycle sort (name/status/rtt/last/ip)"))
 	}
 
 	return s.String()
@@ -323,50 +429,102 @@ func (m *TUIModel) View() string {
 func (m *TUIModel) renderListView(wrappers []PingWrapperInterface) string {
 	var s strings.Builder
 
-	for i, wrapper := range wrappers {
+	if len(wrappers) == 0 {
+		s.WriteString(helpStyle.Render("No hosts match the current filter"))
+		return s.String()
+	}
+
+	now := time.Now().UnixNano()
+
+	// Table header
+	headerLine := fmt.Sprintf("%-3s %-40s %-20s %-12s %-20s %s",
+		"St", "Name", "IP", "RTT", "Last Reply", "Last Loss")
+	s.WriteString(headerStyle.Render(headerLine))
+	s.WriteString("\n")
+	// Separator line with minimum width
+	sepWidth := m.width - 2
+	if sepWidth < 10 {
+		sepWidth = 100 // Default width if terminal size not yet known
+	}
+	s.WriteString(strings.Repeat("─", sepWidth))
+	s.WriteString("\n")
+
+	// Calculate visible range (accounting for header)
+	visibleLines := m.height - 7 // Reduced for header
+	if visibleLines < 1 {
+		visibleLines = 1
+	}
+
+	start := m.scrollOffset
+	end := m.scrollOffset + visibleLines
+	if end > len(wrappers) {
+		end = len(wrappers)
+	}
+
+	// Render only visible items
+	for i := start; i < end; i++ {
+		wrapper := wrappers[i]
 		stats := wrapper.CalcStats(2 * 1e9)
 		isOnline := stats.state && stats.error_message == ""
-		lastLossText := ""
+
+		// Column values
+		status := "✓"
+		if !isOnline {
+			status = "✗"
+		}
+
+		name := wrapper.Host()
+		if len(name) > 40 {
+			name = name[:37] + "..."
+		}
+
+		ip := stats.iprepr
+		if len(ip) > 20 {
+			ip = ip[:17] + "..."
+		}
+
+		rtt := stats.lastrtt_as_string
+		if !isOnline {
+			rtt = "-"
+		}
+
+		lastReply := "-"
+		if stats.lastrecv > 0 {
+			lastReply = time.Duration(stats.last_seen_nano).Round(time.Second).String() + " ago"
+		} else {
+			lastReply = "never"
+		}
+
+		lastLoss := "-"
 		if stats.last_loss_nano > 0 {
-			lastLossText = fmt.Sprintf(" (last loss %s: %s ago for %s)",
-				time.Unix(0, stats.last_loss_nano).Format("2006-01-02 15:04:05"),
+			lastLoss = fmt.Sprintf("%s ago (%s)",
 				time.Duration(time.Now().UnixNano()-stats.last_loss_nano).Round(time.Second),
-				time.Duration(stats.last_loss_duration).Round(time.Second/10),
-			)
+				time.Duration(stats.last_loss_duration).Round(time.Second/10))
 		}
 
 		// Build line
-		var line string
-		if isOnline {
-			line = fmt.Sprintf("✓ %-40s %s%s", wrapper.Host(), stats.lastrtt_as_string, lastLossText)
-			if i == m.cursor && len(wrappers) > 1 {
-				line = selectedStyle.Render(line)
-			} else {
-				line = onlineStyle.Render(line)
-			}
+		line := fmt.Sprintf("%-3s %-40s %-20s %-12s %-20s %s",
+			status, name, ip, rtt, lastReply, lastLoss)
+
+		if i == m.cursor && m.cursor >= 0 {
+			line = selectedStyle.Render(line)
+		} else if isOnline && stats.last_up_transition > 0 && now-stats.last_up_transition < int64(20*time.Second) {
+			line = newOnlineStyle.Render(line)
+		} else if isOnline {
+			line = onlineStyle.Render(line)
 		} else {
-			reason := "timeout"
-			if stats.error_message != "" {
-				reason = stats.error_message
-			} else if stats.lastrecv == 0 {
-				reason = "never replied"
-			} else {
-				reason = fmt.Sprintf("last reply %s ago", time.Duration(stats.last_seen_nano).Round(time.Second))
-			}
-			line = fmt.Sprintf("✗ %-40s %s", wrapper.Host(), reason)
-			if i == m.cursor && len(wrappers) > 1 {
-				line = selectedStyle.Render(line)
-			} else {
-				line = offlineStyle.Render(line)
-			}
+			line = offlineStyle.Render(line)
 		}
 
 		s.WriteString(line)
 		s.WriteString("\n")
 	}
 
-	if len(wrappers) == 0 {
-		s.WriteString(helpStyle.Render("No hosts match the current filter"))
+	// Show scroll indicator if needed
+	if len(wrappers) > visibleLines {
+		totalItems := len(wrappers)
+		scrollInfo := fmt.Sprintf(" [%d-%d/%d] ", start+1, end, totalItems)
+		s.WriteString(helpStyle.Render(scrollInfo))
 	}
 
 	return s.String()
@@ -423,7 +581,8 @@ func (m *TUIModel) applyHostInput() {
 	raw := strings.TrimSpace(m.hostInput)
 	hosts := parseHostsInput(raw)
 	m.wh.ReplaceHosts(hosts)
-	m.cursor = 0
+	m.cursor = -1
+	m.scrollOffset = 0
 	m.filterMode = FilterAll
 	m.showDetails = false
 	if len(hosts) == 0 {
@@ -434,10 +593,39 @@ func (m *TUIModel) applyHostInput() {
 	m.editingHosts = false
 }
 
+// adjustScroll adjusts the scroll offset to keep the cursor visible
+func (m *TUIModel) adjustScroll() {
+	if m.cursor < 0 {
+		return
+	}
+
+	// Calculate available height for list items
+	// height - title(1) - header(1) - spacing(1) - table_header(1) - separator(1) - help(2) = height - 7
+	visibleLines := m.height - 7
+	if visibleLines < 1 {
+		visibleLines = 1
+	}
+
+	// Scroll up if cursor is above visible area
+	if m.cursor < m.scrollOffset {
+		m.scrollOffset = m.cursor
+	}
+
+	// Scroll down if cursor is below visible area
+	if m.cursor >= m.scrollOffset+visibleLines {
+		m.scrollOffset = m.cursor - visibleLines + 1
+	}
+}
+
 func (m *TUIModel) getFilteredWrappers() []PingWrapperInterface {
 	var filtered []PingWrapperInterface
 
 	for _, wrapper := range m.wh.Wrappers() {
+		// Skip hidden hosts
+		if m.hiddenHosts[wrapper.Host()] {
+			continue
+		}
+
 		stats := wrapper.CalcStats(2 * 1e9)
 		isOnline := stats.state && stats.error_message == ""
 		seen := stats.has_ever_received
@@ -464,7 +652,26 @@ func (m *TUIModel) getFilteredWrappers() []PingWrapperInterface {
 	switch m.sortMode {
 	case SortByName:
 		sort.Slice(filtered, func(i, j int) bool {
-			return filtered[i].Host() < filtered[j].Host()
+			statsI := filtered[i].CalcStats(2 * 1e9)
+			statsJ := filtered[j].CalcStats(2 * 1e9)
+			onlineI := statsI.state && statsI.error_message == ""
+			onlineJ := statsJ.state && statsJ.error_message == ""
+
+			// Push hosts without recent replies to the end
+			if onlineI != onlineJ {
+				return onlineI
+			}
+
+			// Use DNS name (hrepr) if available, otherwise use Host()
+			nameI := statsI.hrepr
+			nameJ := statsJ.hrepr
+			if nameI == "" {
+				nameI = filtered[i].Host()
+			}
+			if nameJ == "" {
+				nameJ = filtered[j].Host()
+			}
+			return nameI < nameJ
 		})
 	case SortByStatus:
 		sort.Slice(filtered, func(i, j int) bool {
@@ -481,7 +688,81 @@ func (m *TUIModel) getFilteredWrappers() []PingWrapperInterface {
 		sort.Slice(filtered, func(i, j int) bool {
 			statsI := filtered[i].CalcStats(2 * 1e9)
 			statsJ := filtered[j].CalcStats(2 * 1e9)
+			onlineI := statsI.state && statsI.error_message == ""
+			onlineJ := statsJ.state && statsJ.error_message == ""
+
+			// Push hosts without recent replies to the end
+			if onlineI != onlineJ {
+				return onlineI
+			}
+
 			return statsI.lastrtt < statsJ.lastrtt
+		})
+	case SortByLastSeen:
+		sort.Slice(filtered, func(i, j int) bool {
+			statsI := filtered[i].CalcStats(2 * 1e9)
+			statsJ := filtered[j].CalcStats(2 * 1e9)
+			onlineI := statsI.state && statsI.error_message == ""
+			onlineJ := statsJ.state && statsJ.error_message == ""
+
+			// Offline hosts first, then online hosts
+			if onlineI != onlineJ {
+				return !onlineI // offline (false) comes before online (true)
+			}
+
+			// Among offline hosts: never received replies go last
+			if !onlineI && !onlineJ {
+				if statsI.lastrecv == 0 && statsJ.lastrecv == 0 {
+					return filtered[i].Host() < filtered[j].Host()
+				}
+				if statsI.lastrecv == 0 {
+					return false
+				}
+				if statsJ.lastrecv == 0 {
+					return true
+				}
+				// Both have received before: sort by last_loss_nano (most recent problem first)
+				return statsI.last_loss_nano > statsJ.last_loss_nano
+			}
+
+			// Among online hosts: sort by whether they ever had a loss
+			hasLossI := statsI.last_loss_nano > 0
+			hasLossJ := statsJ.last_loss_nano > 0
+			if hasLossI != hasLossJ {
+				return hasLossI // hosts with past issues first
+			}
+			if hasLossI && hasLossJ {
+				// Both had losses: sort by most recent loss
+				return statsI.last_loss_nano > statsJ.last_loss_nano
+			}
+
+			// Both are stable online hosts with no history of loss: sort by name
+			nameI := statsI.hrepr
+			nameJ := statsJ.hrepr
+			if nameI == "" {
+				nameI = filtered[i].Host()
+			}
+			if nameJ == "" {
+				nameJ = filtered[j].Host()
+			}
+			return nameI < nameJ
+		})
+	case SortByIP:
+		sort.Slice(filtered, func(i, j int) bool {
+			statsI := filtered[i].CalcStats(2 * 1e9)
+			statsJ := filtered[j].CalcStats(2 * 1e9)
+			keyI := ipKey(statsI.iprepr)
+			keyJ := ipKey(statsJ.iprepr)
+			if keyI != nil && keyJ != nil && !bytes.Equal(keyI, keyJ) {
+				return bytes.Compare(keyI, keyJ) < 0
+			}
+			if keyI != nil && keyJ == nil {
+				return true
+			}
+			if keyI == nil && keyJ != nil {
+				return false
+			}
+			return filtered[i].Host() < filtered[j].Host()
 		})
 	}
 
@@ -513,6 +794,8 @@ func (m *TUIModel) getSortModeString() string {
 		return "RTT"
 	case SortByLastSeen:
 		return "Last Seen"
+	case SortByIP:
+		return "IP"
 	default:
 		return "Unknown"
 	}
@@ -539,6 +822,8 @@ func nextSortMode(current SortMode) SortMode {
 		return SortByRTT
 	case SortByRTT:
 		return SortByLastSeen
+	case SortByLastSeen:
+		return SortByIP
 	default:
 		return SortByName
 	}
@@ -555,6 +840,17 @@ func parseHostsInput(raw string) []string {
 		}
 	}
 	return hosts
+}
+
+func ipKey(s string) []byte {
+	ip := net.ParseIP(s)
+	if ip == nil {
+		return nil
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return append(make([]byte, 12), v4...)
+	}
+	return ip.To16()
 }
 
 // RunTUI starts the TUI interface with an initial filter mode applied

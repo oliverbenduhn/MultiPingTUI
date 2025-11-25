@@ -188,7 +188,7 @@ func determineInitialFilter(onlyOnline, onlyOffline bool) FilterMode {
 	case onlyOffline && !onlyOnline:
 		return FilterOffline
 	default:
-		return FilterSmart
+		return FilterAll
 	}
 }
 

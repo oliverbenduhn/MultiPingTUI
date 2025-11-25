@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"net"
 	"os"
+	"os/signal"
 )
 
 // FilterMode represents the current filter state
@@ -53,6 +54,8 @@ type TUIModel struct {
 	statusMessage    string
 	hiddenHosts      map[string]bool // tracks hidden hosts by Host() name
 	visibleColumns   map[int]bool    // tracks which columns are visible (1-6)
+	statsCache       map[string]PWStats // cache stats per wrapper to avoid recalculation
+	statsCacheTime   time.Time       // when stats were last calculated
 }
 
 // tickMsg is sent every 100ms to update the display
@@ -194,6 +197,8 @@ func NewTUIModel(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMo
 		transitionWriter: tw,
 		hiddenHosts:      make(map[string]bool),
 		visibleColumns:   visibleCols,
+		statsCache:       make(map[string]PWStats),
+		statsCacheTime:   time.Time{},
 	}
 }
 
@@ -210,6 +215,25 @@ func tickCmd() tea.Cmd {
 	})
 }
 
+// updateStatsCache updates the cached stats for all wrappers
+// This is called once per tick to avoid recalculating stats multiple times per frame
+func (m *TUIModel) updateStatsCache() {
+	m.statsCacheTime = time.Now()
+	for _, wrapper := range m.wh.Wrappers() {
+		stats := wrapper.CalcStats(2 * 1e9)
+		m.statsCache[wrapper.Host()] = stats
+	}
+}
+
+// getCachedStats returns cached stats for a wrapper
+func (m *TUIModel) getCachedStats(wrapper PingWrapperInterface) PWStats {
+	if stats, ok := m.statsCache[wrapper.Host()]; ok {
+		return stats
+	}
+	// Fallback if cache miss (shouldn't happen)
+	return wrapper.CalcStats(2 * 1e9)
+}
+
 func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -218,8 +242,8 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		// Update stats for all wrappers
-		m.wh.CalcStats(2 * 1e9)
+		// Update stats cache for all wrappers
+		m.updateStatsCache()
 		return m, tickCmd()
 
 	case tea.KeyMsg:
@@ -619,7 +643,7 @@ func (m *TUIModel) renderListView(wrappers []PingWrapperInterface) string {
 	// Render only visible items
 	for i := start; i < end; i++ {
 		wrapper := wrappers[i]
-		stats := wrapper.CalcStats(2 * 1e9)
+		stats := m.getCachedStats(wrapper)
 		isOnline := stats.state && stats.error_message == ""
 
 		// Column values
@@ -727,7 +751,7 @@ func (m *TUIModel) renderHostInput() string {
 }
 
 func (m *TUIModel) renderDetailView(wrapper PingWrapperInterface) string {
-	stats := wrapper.CalcStats(2 * 1e9)
+	stats := m.getCachedStats(wrapper)
 	isOnline := stats.state && stats.error_message == ""
 
 	var details strings.Builder
@@ -811,7 +835,7 @@ func (m *TUIModel) getFilteredWrappers() []PingWrapperInterface {
 			continue
 		}
 
-		stats := wrapper.CalcStats(2 * 1e9)
+		stats := m.getCachedStats(wrapper)
 		isOnline := stats.state && stats.error_message == ""
 		seen := stats.has_ever_received
 
@@ -837,8 +861,8 @@ func (m *TUIModel) getFilteredWrappers() []PingWrapperInterface {
 	switch m.sortMode {
 	case SortByName:
 		sort.Slice(filtered, func(i, j int) bool {
-			statsI := filtered[i].CalcStats(2 * 1e9)
-			statsJ := filtered[j].CalcStats(2 * 1e9)
+			statsI := m.getCachedStats(filtered[i])
+			statsJ := m.getCachedStats(filtered[j])
 			onlineI := statsI.state && statsI.error_message == ""
 			onlineJ := statsJ.state && statsJ.error_message == ""
 
@@ -860,8 +884,8 @@ func (m *TUIModel) getFilteredWrappers() []PingWrapperInterface {
 		})
 	case SortByStatus:
 		sort.Slice(filtered, func(i, j int) bool {
-			statsI := filtered[i].CalcStats(2 * 1e9)
-			statsJ := filtered[j].CalcStats(2 * 1e9)
+			statsI := m.getCachedStats(filtered[i])
+			statsJ := m.getCachedStats(filtered[j])
 			onlineI := statsI.state && statsI.error_message == ""
 			onlineJ := statsJ.state && statsJ.error_message == ""
 			if onlineI != onlineJ {
@@ -871,8 +895,8 @@ func (m *TUIModel) getFilteredWrappers() []PingWrapperInterface {
 		})
 	case SortByRTT:
 		sort.Slice(filtered, func(i, j int) bool {
-			statsI := filtered[i].CalcStats(2 * 1e9)
-			statsJ := filtered[j].CalcStats(2 * 1e9)
+			statsI := m.getCachedStats(filtered[i])
+			statsJ := m.getCachedStats(filtered[j])
 			onlineI := statsI.state && statsI.error_message == ""
 			onlineJ := statsJ.state && statsJ.error_message == ""
 
@@ -885,8 +909,8 @@ func (m *TUIModel) getFilteredWrappers() []PingWrapperInterface {
 		})
 	case SortByLastSeen:
 		sort.Slice(filtered, func(i, j int) bool {
-			statsI := filtered[i].CalcStats(2 * 1e9)
-			statsJ := filtered[j].CalcStats(2 * 1e9)
+			statsI := m.getCachedStats(filtered[i])
+			statsJ := m.getCachedStats(filtered[j])
 			onlineI := statsI.state && statsI.error_message == ""
 			onlineJ := statsJ.state && statsJ.error_message == ""
 
@@ -934,8 +958,8 @@ func (m *TUIModel) getFilteredWrappers() []PingWrapperInterface {
 		})
 	case SortByIP:
 		sort.Slice(filtered, func(i, j int) bool {
-			statsI := filtered[i].CalcStats(2 * 1e9)
-			statsJ := filtered[j].CalcStats(2 * 1e9)
+			statsI := m.getCachedStats(filtered[i])
+			statsJ := m.getCachedStats(filtered[j])
 			keyI := ipKey(statsI.iprepr)
 			keyJ := ipKey(statsJ.iprepr)
 			if keyI != nil && keyJ != nil && !bytes.Equal(keyI, keyJ) {
@@ -1062,6 +1086,10 @@ func RunTUI(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode) (
 	// Early panic protection before any terminal manipulation
 	defer func() {
 		if r := recover(); r != nil {
+			// Ensure terminal is restored
+			fmt.Print("\033[?25h")         // Show cursor
+			fmt.Print("\033[2J\033[H")     // Clear screen
+			fmt.Print("\033[?1049l")       // Exit alt screen
 			finalErr = fmt.Errorf("panic in TUI: %v\n%s", r, debug.Stack())
 			fmt.Fprintf(os.Stderr, "PANIC in TUI:\n%v\n%s\n", r, debug.Stack())
 		}
@@ -1071,14 +1099,45 @@ func RunTUI(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode) (
 		fmt.Fprintf(os.Stderr, "DEBUG: Starting wrapper initialization (this may take a moment for large subnets)...\n")
 	}
 
-	// Start wrappers BEFORE entering alt screen
-	// This prevents terminal corruption if startup panics
-	wh.Start()
-	defer wh.Stop()
+	// Start wrappers BEFORE entering alt screen with timeout protection
+	startDone := make(chan bool, 1)
+	startErr := make(chan error, 1)
 
-	if DebugMode {
-		fmt.Fprintf(os.Stderr, "DEBUG: All wrappers started, launching TUI...\n")
+	// Setup signal handling for Ctrl+C during startup
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+	defer signal.Stop(sigChan)
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "PANIC during wrapper start: %v\n", r)
+				startErr <- fmt.Errorf("panic: %v", r)
+				return
+			}
+			startDone <- true
+		}()
+		wh.Start()
+	}()
+
+	// Wait for startup with timeout and interrupt support
+	select {
+	case <-startDone:
+		if DebugMode {
+			fmt.Fprintf(os.Stderr, "DEBUG: All wrappers started, launching TUI...\n")
+		}
+	case err := <-startErr:
+		return fmt.Errorf("error starting wrappers: %w", err)
+	case <-sigChan:
+		fmt.Fprintf(os.Stderr, "\nInterrupted during startup, cleaning up...\n")
+		wh.Stop()
+		return fmt.Errorf("interrupted by user")
+	case <-time.After(60 * time.Second):
+		wh.Stop()
+		return fmt.Errorf("timeout waiting for wrappers to start (60s)")
 	}
+
+	defer wh.Stop()
 
 	model := NewTUIModel(wh, tw, initialFilter)
 	p := tea.NewProgram(
@@ -1090,6 +1149,9 @@ func RunTUI(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode) (
 	defer func() {
 		if r := recover(); r != nil {
 			_ = p.ReleaseTerminal()
+			// Explicit terminal cleanup
+			fmt.Print("\033[?25h")     // Show cursor
+			fmt.Print("\033[2J\033[H") // Clear screen
 			fmt.Fprintf(os.Stderr, "PANIC in bubbletea.Run:\n%v\n%s\n", r, debug.Stack())
 			finalErr = fmt.Errorf("panic in bubbletea: %v", r)
 		}

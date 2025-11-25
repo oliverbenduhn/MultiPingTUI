@@ -52,6 +52,7 @@ type TUIModel struct {
 	hostInput        string
 	statusMessage    string
 	hiddenHosts      map[string]bool // tracks hidden hosts by Host() name
+	visibleColumns   map[int]bool    // tracks which columns are visible (1-6)
 }
 
 // tickMsg is sent every 100ms to update the display
@@ -177,6 +178,12 @@ func NewTUIModel(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMo
 		initialFilter = FilterSmart
 	}
 
+	// Initialize all columns as visible
+	visibleCols := make(map[int]bool)
+	for i := 1; i <= 6; i++ {
+		visibleCols[i] = true
+	}
+
 	return &TUIModel{
 		wh:               wh,
 		cursor:           -1,
@@ -186,6 +193,7 @@ func NewTUIModel(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMo
 		showDetails:      false,
 		transitionWriter: tw,
 		hiddenHosts:      make(map[string]bool),
+		visibleColumns:   visibleCols,
 	}
 }
 
@@ -377,6 +385,20 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.hostInput = b.String()
 			return m, nil
+
+		default:
+			// Handle number keys 1-6 for column toggling
+			if len(msg.String()) == 1 && msg.String() >= "1" && msg.String() <= "6" {
+				colNum := int(msg.String()[0] - '0')
+				m.visibleColumns[colNum] = !m.visibleColumns[colNum]
+				colName := m.getColumnName(colNum)
+				if m.visibleColumns[colNum] {
+					m.statusMessage = fmt.Sprintf("Column %d (%s) shown", colNum, colName)
+				} else {
+					m.statusMessage = fmt.Sprintf("Column %d (%s) hidden", colNum, colName)
+				}
+				return m, nil
+			}
 		}
 	}
 
@@ -427,7 +449,7 @@ func (m *TUIModel) View() string {
 	if m.showDetails {
 		s.WriteString(helpStyle.Render("esc: back │ q: quit"))
 	} else {
-		s.WriteString(helpStyle.Render("↑↓/jk: navigate │ enter: details │ e: edit hosts │ q: quit"))
+		s.WriteString(helpStyle.Render("↑↓/jk: navigate │ enter: details │ e: edit hosts │ 1-6: toggle columns │ q: quit"))
 		s.WriteString("\n")
 		s.WriteString(helpStyle.Render("f: cycle filters (smart/online/offline/all) │ s: cycle sort (name/status/rtt/last/ip)"))
 	}
@@ -445,7 +467,7 @@ func (m *TUIModel) renderListView(wrappers []PingWrapperInterface) string {
 
 	now := time.Now().UnixNano()
 
-	// Dynamic column widths
+	// Dynamic column widths with toggleable columns
 	statusWidth := 3
 	nameWidth := 32
 	ipWidth := 18
@@ -458,8 +480,53 @@ func (m *TUIModel) renderListView(wrappers []PingWrapperInterface) string {
 	minLastReply := 12
 	minLastLoss := 12
 
-	spaceCount := 5 // spaces between columns
-	totalWidth := statusWidth + nameWidth + ipWidth + rttWidth + lastReplyWidth + lastLossWidth + spaceCount
+	// Count visible columns for spacing calculation
+	visibleCount := 0
+	if m.visibleColumns[1] {
+		visibleCount++
+	}
+	if m.visibleColumns[2] {
+		visibleCount++
+	}
+	if m.visibleColumns[3] {
+		visibleCount++
+	}
+	if m.visibleColumns[4] {
+		visibleCount++
+	}
+	if m.visibleColumns[5] {
+		visibleCount++
+	}
+	if m.visibleColumns[6] {
+		visibleCount++
+	}
+
+	spaceCount := visibleCount - 1 // spaces between visible columns
+	if spaceCount < 0 {
+		spaceCount = 0
+	}
+
+	totalWidth := 0
+	if m.visibleColumns[1] {
+		totalWidth += statusWidth
+	}
+	if m.visibleColumns[2] {
+		totalWidth += nameWidth
+	}
+	if m.visibleColumns[3] {
+		totalWidth += ipWidth
+	}
+	if m.visibleColumns[4] {
+		totalWidth += rttWidth
+	}
+	if m.visibleColumns[5] {
+		totalWidth += lastReplyWidth
+	}
+	if m.visibleColumns[6] {
+		totalWidth += lastLossWidth
+	}
+	totalWidth += spaceCount
+
 	target := m.width - 2
 	if target < 50 {
 		target = 50
@@ -468,27 +535,65 @@ func (m *TUIModel) renderListView(wrappers []PingWrapperInterface) string {
 	// Shrink columns (starting with the widest) until we fit, but not below mins
 	for totalWidth > target {
 		switch {
-		case nameWidth > minName:
+		case nameWidth > minName && m.visibleColumns[2]:
 			nameWidth--
-		case lastLossWidth > minLastLoss:
+		case lastLossWidth > minLastLoss && m.visibleColumns[6]:
 			lastLossWidth--
-		case lastReplyWidth > minLastReply:
+		case lastReplyWidth > minLastReply && m.visibleColumns[5]:
 			lastReplyWidth--
-		case ipWidth > minIP:
+		case ipWidth > minIP && m.visibleColumns[3]:
 			ipWidth--
-		case rttWidth > minRTT:
+		case rttWidth > minRTT && m.visibleColumns[4]:
 			rttWidth--
 		default:
 			// We hit mins; break to avoid infinite loop
 			totalWidth = target
 			break
 		}
-		totalWidth = statusWidth + nameWidth + ipWidth + rttWidth + lastReplyWidth + lastLossWidth + spaceCount
+		totalWidth = 0
+		if m.visibleColumns[1] {
+			totalWidth += statusWidth
+		}
+		if m.visibleColumns[2] {
+			totalWidth += nameWidth
+		}
+		if m.visibleColumns[3] {
+			totalWidth += ipWidth
+		}
+		if m.visibleColumns[4] {
+			totalWidth += rttWidth
+		}
+		if m.visibleColumns[5] {
+			totalWidth += lastReplyWidth
+		}
+		if m.visibleColumns[6] {
+			totalWidth += lastLossWidth
+		}
+		totalWidth += spaceCount
 	}
 
-	headerFmt := fmt.Sprintf("%%-%ds %%-%ds %%-%ds %%-%ds %%-%ds %%s",
-		statusWidth, nameWidth, ipWidth, rttWidth, lastReplyWidth)
-	headerLine := fmt.Sprintf(headerFmt, "St", "Name", "IP", "RTT", "Last Reply", "Last Loss")
+	// Build table header based on visible columns with dynamic widths
+	var headerParts []string
+	if m.visibleColumns[1] {
+		headerParts = append(headerParts, fmt.Sprintf("%-*s", statusWidth, "1:St"))
+	}
+	if m.visibleColumns[2] {
+		headerParts = append(headerParts, fmt.Sprintf("%-*s", nameWidth, "2:Name"))
+	}
+	if m.visibleColumns[3] {
+		headerParts = append(headerParts, fmt.Sprintf("%-*s", ipWidth, "3:IP"))
+	}
+	if m.visibleColumns[4] {
+		headerParts = append(headerParts, fmt.Sprintf("%-*s", rttWidth, "4:RTT"))
+	}
+	if m.visibleColumns[5] {
+		headerParts = append(headerParts, fmt.Sprintf("%-*s", lastReplyWidth, "5:Last Reply"))
+	}
+	if m.visibleColumns[6] {
+		headerParts = append(headerParts, "6:Last Loss")
+	}
+
+	headerLine := strings.Join(headerParts, " ")
 	s.WriteString(headerStyle.Render(headerLine))
 	s.WriteString("\n")
 	// Separator line with minimum width
@@ -563,10 +668,28 @@ func (m *TUIModel) renderListView(wrappers []PingWrapperInterface) string {
 				time.Duration(stats.last_loss_duration).Round(time.Second/10))
 		}
 
-		// Build line
-		rowFmt := fmt.Sprintf("%%-%ds %%-%ds %%-%ds %%-%ds %%-%ds %%s",
-			statusWidth, nameWidth, ipWidth, rttWidth, lastReplyWidth)
-		line := fmt.Sprintf(rowFmt, status, name, ip, rtt, lastReply, lastLoss)
+		// Build line based on visible columns with dynamic widths
+		var lineParts []string
+		if m.visibleColumns[1] {
+			lineParts = append(lineParts, fmt.Sprintf("%-*s", statusWidth, status))
+		}
+		if m.visibleColumns[2] {
+			lineParts = append(lineParts, fmt.Sprintf("%-*s", nameWidth, name))
+		}
+		if m.visibleColumns[3] {
+			lineParts = append(lineParts, fmt.Sprintf("%-*s", ipWidth, ip))
+		}
+		if m.visibleColumns[4] {
+			lineParts = append(lineParts, fmt.Sprintf("%-*s", rttWidth, rtt))
+		}
+		if m.visibleColumns[5] {
+			lineParts = append(lineParts, fmt.Sprintf("%-*s", lastReplyWidth, lastReply))
+		}
+		if m.visibleColumns[6] {
+			lineParts = append(lineParts, lastLoss)
+		}
+
+		line := strings.Join(lineParts, " ")
 
 		if i == m.cursor && m.cursor >= 0 {
 			line = selectedStyle.Render(line)
@@ -858,6 +981,25 @@ func (m *TUIModel) getSortModeString() string {
 		return "Last Seen"
 	case SortByIP:
 		return "IP"
+	default:
+		return "Unknown"
+	}
+}
+
+func (m *TUIModel) getColumnName(colNum int) string {
+	switch colNum {
+	case 1:
+		return "St"
+	case 2:
+		return "Name"
+	case 3:
+		return "IP"
+	case 4:
+		return "RTT"
+	case 5:
+		return "Last Reply"
+	case 6:
+		return "Last Loss"
 	default:
 		return "Unknown"
 	}

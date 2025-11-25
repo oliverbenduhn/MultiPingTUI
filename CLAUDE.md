@@ -73,6 +73,7 @@ When running in TUI mode (default):
 - `f` - Cycle filter: smart (online or seen) → online → offline → all
 - `s` - Cycle sort: name → status → RTT → last seen → IP (default: IP)
 - `e` - Edit hosts (add/remove hosts, supports CIDR notation)
+- `1-6` - Toggle column visibility (1:Status, 2:Name, 3:IP, 4:RTT, 5:Last Reply, 6:Last Loss)
 - `Esc` - Back from detail view or cancel edit mode
 - `q` or `Ctrl+C` - Quit
 
@@ -247,6 +248,7 @@ The TUI follows the Elm/Bubbletea architecture:
    - Sort mode (Name/Status/RTT/LastSeen/IP, default: IP)
    - Detail view toggle
    - Edit mode state and input buffer
+   - Column visibility map (tracks which columns 1-6 are visible)
    - Reference to `WrapperHolder` for ping data
 
 2. **Update** (`Update(msg tea.Msg)`): Handles all messages
@@ -274,6 +276,13 @@ To add a new filter or sort mode:
 2. Implement logic in `getFilteredWrappers()`
 3. Add key binding and update handler
 4. Update display strings in `getFilterModeString()` or `getSortModeString()`
+
+To add a new toggleable column:
+
+1. Add column to `visibleColumns` map initialization (currently supports 1-6)
+2. Update `getColumnName()` with the new column name
+3. Add column rendering logic to `renderListView()` header and data rows
+4. Update help text and documentation
 
 ## Performance Optimizations
 

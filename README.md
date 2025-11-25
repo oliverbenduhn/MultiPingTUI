@@ -10,6 +10,7 @@
 - 🔍 **Live Filtering** - Filter by online/offline status on the fly
 - 📊 **Detailed View** - Press Enter for detailed statistics per host
 - 🔀 **Sorting** - Sort by name, status, or RTT
+- 👁️ **Column Toggle** - Show/hide columns with number keys (1-6)
 - 🌐 **CIDR Support** - Scan entire subnets (192.168.1.0/24)
 - 📝 **Transition Logging** - JSON log of all state changes
 
@@ -26,9 +27,7 @@ mping localhost google.com 8.8.8.8
 - `f` - Cycle filter: smart (online or seen) → online → offline → all
 - `s` - Cycle sort: name → status → RTT (round-trip time) → last seen → IP
 - `e` - Edit host list (replace hosts while running)
-- `n` - Sort by name
-- `S` - Sort by status
-- `r` - Sort by RTT
+- `1-6` - Toggle column visibility (1:Status, 2:Name, 3:IP, 4:RTT, 5:Last Reply, 6:Last Loss)
 - `Esc` - Back from detail view
 - `q` or `Ctrl+C` - Quit
 

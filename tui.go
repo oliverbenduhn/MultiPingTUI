@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"net"
+	"os"
 )
 
 // FilterMode represents the current filter state
@@ -126,41 +128,48 @@ var keys = keyMap{
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("170")).
+			Foreground(lipgloss.Color("#e5e7eb")).
 			MarginLeft(1)
 
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("12")).
-			Background(lipgloss.Color("236")).
+			Foreground(lipgloss.Color("#e5e7eb")).
+			Background(lipgloss.Color("#1f2937")).
 			Padding(0, 1)
 
 	selectedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("0")).
-			Background(lipgloss.Color("12")).
+			Foreground(lipgloss.Color("#ffffff")).
+			Background(lipgloss.Color("#3b82f6")).
 			Bold(true)
 
 	newOnlineStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("33")).
+			Foreground(lipgloss.Color("#22d3ee")).
 			Bold(true)
 
 	onlineStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("46")).
+			Foreground(lipgloss.Color("#4ade80")).
 			Bold(true)
 
 	offlineStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196")).
+			Foreground(lipgloss.Color("#f87171")).
 			Bold(true)
 
 	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241")).
+			Foreground(lipgloss.Color("#9ca3af")).
 			MarginLeft(1)
 
 	detailStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("12")).
+			BorderForeground(lipgloss.Color("#3b82f6")).
 			Padding(1, 2).
 			MarginLeft(2)
+
+	accentStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#eab308")).
+			Bold(true)
+
+	separatorStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#4b5563"))
 )
 
 func NewTUIModel(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode) *TUIModel {
@@ -436,9 +445,50 @@ func (m *TUIModel) renderListView(wrappers []PingWrapperInterface) string {
 
 	now := time.Now().UnixNano()
 
-	// Table header
-	headerLine := fmt.Sprintf("%-3s %-40s %-20s %-12s %-20s %s",
-		"St", "Name", "IP", "RTT", "Last Reply", "Last Loss")
+	// Dynamic column widths
+	statusWidth := 3
+	nameWidth := 32
+	ipWidth := 18
+	rttWidth := 10
+	lastReplyWidth := 16
+	lastLossWidth := 16
+	minName := 15
+	minIP := 12
+	minRTT := 8
+	minLastReply := 12
+	minLastLoss := 12
+
+	spaceCount := 5 // spaces between columns
+	totalWidth := statusWidth + nameWidth + ipWidth + rttWidth + lastReplyWidth + lastLossWidth + spaceCount
+	target := m.width - 2
+	if target < 50 {
+		target = 50
+	}
+
+	// Shrink columns (starting with the widest) until we fit, but not below mins
+	for totalWidth > target {
+		switch {
+		case nameWidth > minName:
+			nameWidth--
+		case lastLossWidth > minLastLoss:
+			lastLossWidth--
+		case lastReplyWidth > minLastReply:
+			lastReplyWidth--
+		case ipWidth > minIP:
+			ipWidth--
+		case rttWidth > minRTT:
+			rttWidth--
+		default:
+			// We hit mins; break to avoid infinite loop
+			totalWidth = target
+			break
+		}
+		totalWidth = statusWidth + nameWidth + ipWidth + rttWidth + lastReplyWidth + lastLossWidth + spaceCount
+	}
+
+	headerFmt := fmt.Sprintf("%%-%ds %%-%ds %%-%ds %%-%ds %%-%ds %%s",
+		statusWidth, nameWidth, ipWidth, rttWidth, lastReplyWidth)
+	headerLine := fmt.Sprintf(headerFmt, "St", "Name", "IP", "RTT", "Last Reply", "Last Loss")
 	s.WriteString(headerStyle.Render(headerLine))
 	s.WriteString("\n")
 	// Separator line with minimum width
@@ -446,7 +496,7 @@ func (m *TUIModel) renderListView(wrappers []PingWrapperInterface) string {
 	if sepWidth < 10 {
 		sepWidth = 100 // Default width if terminal size not yet known
 	}
-	s.WriteString(strings.Repeat("─", sepWidth))
+	s.WriteString(separatorStyle.Render(strings.Repeat("─", sepWidth)))
 	s.WriteString("\n")
 
 	// Calculate visible range (accounting for header)
@@ -473,14 +523,25 @@ func (m *TUIModel) renderListView(wrappers []PingWrapperInterface) string {
 			status = "✗"
 		}
 
-		name := wrapper.Host()
-		if len(name) > 40 {
-			name = name[:37] + "..."
+		name := stats.hrepr
+		if name == "" {
+			name = wrapper.Host()
+		}
+		if len(name) > nameWidth {
+			if nameWidth > 3 {
+				name = name[:nameWidth-3] + "..."
+			} else {
+				name = name[:nameWidth]
+			}
 		}
 
 		ip := stats.iprepr
-		if len(ip) > 20 {
-			ip = ip[:17] + "..."
+		if len(ip) > ipWidth {
+			if ipWidth > 3 {
+				ip = ip[:ipWidth-3] + "..."
+			} else {
+				ip = ip[:ipWidth]
+			}
 		}
 
 		rtt := stats.lastrtt_as_string
@@ -503,8 +564,9 @@ func (m *TUIModel) renderListView(wrappers []PingWrapperInterface) string {
 		}
 
 		// Build line
-		line := fmt.Sprintf("%-3s %-40s %-20s %-12s %-20s %s",
-			status, name, ip, rtt, lastReply, lastLoss)
+		rowFmt := fmt.Sprintf("%%-%ds %%-%ds %%-%ds %%-%ds %%-%ds %%s",
+			statusWidth, nameWidth, ipWidth, rttWidth, lastReplyWidth)
+		line := fmt.Sprintf(rowFmt, status, name, ip, rtt, lastReply, lastLoss)
 
 		if i == m.cursor && m.cursor >= 0 {
 			line = selectedStyle.Render(line)
@@ -552,8 +614,8 @@ func (m *TUIModel) renderDetailView(wrapper PingWrapperInterface) string {
 	if isOnline {
 		details.WriteString(onlineStyle.Render("Status: ONLINE ✓"))
 		details.WriteString("\n\n")
-		details.WriteString(fmt.Sprintf("Last RTT: %s\n", stats.lastrtt_as_string))
-		details.WriteString(fmt.Sprintf("Last Received: %s ago\n", time.Duration(stats.last_seen_nano).Round(time.Millisecond)))
+		details.WriteString(accentStyle.Render(fmt.Sprintf("Last RTT: %s\n", stats.lastrtt_as_string)))
+		details.WriteString(accentStyle.Render(fmt.Sprintf("Last Received: %s ago\n", time.Duration(stats.last_seen_nano).Round(time.Millisecond))))
 		if stats.last_loss_nano > 0 {
 			details.WriteString("\n")
 			details.WriteString(fmt.Sprintf("Last Loss: %s\n", time.Unix(0, stats.last_loss_nano).Format("2006-01-02 15:04:05")))
@@ -854,12 +916,42 @@ func ipKey(s string) []byte {
 }
 
 // RunTUI starts the TUI interface with an initial filter mode applied
-func RunTUI(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode) error {
-	model := NewTUIModel(wh, tw, initialFilter)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+func RunTUI(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode) (finalErr error) {
+	// Early panic protection before any terminal manipulation
+	defer func() {
+		if r := recover(); r != nil {
+			finalErr = fmt.Errorf("panic in TUI: %v\n%s", r, debug.Stack())
+			fmt.Fprintf(os.Stderr, "PANIC in TUI:\n%v\n%s\n", r, debug.Stack())
+		}
+	}()
 
+	if DebugMode {
+		fmt.Fprintf(os.Stderr, "DEBUG: Starting wrapper initialization (this may take a moment for large subnets)...\n")
+	}
+
+	// Start wrappers BEFORE entering alt screen
+	// This prevents terminal corruption if startup panics
 	wh.Start()
 	defer wh.Stop()
+
+	if DebugMode {
+		fmt.Fprintf(os.Stderr, "DEBUG: All wrappers started, launching TUI...\n")
+	}
+
+	model := NewTUIModel(wh, tw, initialFilter)
+	p := tea.NewProgram(
+		model,
+		tea.WithAltScreen(),
+	)
+
+	// Additional panic protection for bubbletea Run
+	defer func() {
+		if r := recover(); r != nil {
+			_ = p.ReleaseTerminal()
+			fmt.Fprintf(os.Stderr, "PANIC in bubbletea.Run:\n%v\n%s\n", r, debug.Stack())
+			finalErr = fmt.Errorf("panic in bubbletea: %v", r)
+		}
+	}()
 
 	_, err := p.Run()
 	return err

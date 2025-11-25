@@ -82,6 +82,12 @@ func (w *WrapperHolder) Start() {
 		wg.Add(1)
 		go func(idx int, pw PingWrapperInterface) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "PANIC starting wrapper %d (%s): %v\n", idx, pw.Host(), r)
+				}
+			}()
+
 			sem <- struct{}{}        // Acquire
 			defer func() { <-sem }() // Release
 

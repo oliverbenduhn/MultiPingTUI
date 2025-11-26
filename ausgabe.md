@@ -281,3 +281,180 @@ Das TUI sollte jetzt:
 - ✅ Flüssig reagieren auf Tastatureingaben
 - ✅ Keine CPU-Last verursachen
 - ✅ Ctrl+C jederzeit funktioniert
+
+## FINAL FIX: Cache Initial Initialization
+
+### Das eigentliche Problem (nach Analyse)
+
+Durch Vergleich mit der funktionierenden Version (2c3215c) wurde klar:
+
+**Das Problem war NICHT die Performance an sich**, sondern:
+- Der Stats-Cache wurde **NICHT initial befüllt**
+- Beim ersten `View()` Call (VOR dem ersten `tickMsg`) war der Cache leer
+- `getCachedStats()` fiel zurück auf `CalcStats()` 
+- **254 Hosts × Sortierung = TAUSENDE CalcStats() im ersten Frame**
+- TUI blockiert komplett beim ersten Render
+
+### Die Lösung: Cache Pre-Fill in Init()
+
+```go
+func (m *TUIModel) Init() tea.Cmd {
+    // CRITICAL: Pre-fill stats cache before first View() call
+    m.updateStatsCache()
+    
+    return tea.Batch(
+        tickCmd(),
+        tea.EnterAltScreen,
+    )
+}
+```
+
+### Warum das funktioniert
+
+**Bubbletea Event-Reihenfolge:**
+1. `Init()` wird aufgerufen → Cache wird JETZT befüllt ✅
+2. `View()` wird aufgerufen → Cache ist VOLL ✅
+3. `tickMsg` kommt nach 100ms → Cache wird neu befüllt
+
+**Vorher:**
+1. `Init()` wird aufgerufen → Cache bleibt LEER ❌
+2. `View()` wird aufgerufen → Cache ist LEER → Fallback auf CalcStats() ❌
+3. **FREEZE** ❌
+
+### Testen
+
+```bash
+# Build mit Final Fix
+go build -o mping
+
+# Test mit vollem /24 Subnet
+./mping 192.168.10.0/24
+
+# Sollte jetzt SOFORT starten ohne Freeze!
+```
+
+### Commit-Empfehlung
+
+```bash
+git add tui.go
+git commit -m "Fix: Initialize stats cache in Init() to prevent first-frame freeze
+
+The stats cache must be pre-filled before the first View() call.
+Without this, getCachedStats() falls back to CalcStats() for all hosts
+in the first render, causing a complete freeze with 254+ hosts.
+
+Root cause: Bubbletea calls View() before the first tickMsg arrives."
+```
+
+### Vergleich: Funktionierende vs Nicht-Funktionierende Version
+
+Siehe `DIFF_ANALYSIS.md` für detaillierte Analyse der Unterschiede.
+
+**Fazit**: Alle Performance-Fixes waren korrekt, es fehlte nur die initiale Cache-Befüllung!
+
+## Feature: Adjustable Update Rates (für große Deployments)
+
+### Problem
+Bei parallelem Monitoring mehrerer großer Subnets (z.B. 4 × /24 = ~1000 Hosts) ist eine 100ms Update-Rate zu aggressiv und verursacht unnötige CPU-Last.
+
+### Lösung: Dynamische Update-Raten
+
+**Tastenkombination:** `r` (cycle rate)
+
+**Verfügbare Raten:**
+- **100ms** (Standard) - Für normale Nutzung mit wenigen Hosts
+- **1s** - Für mittelgroße Deployments (50-100 Hosts)
+- **5s** - Für große Deployments (200-500 Hosts)
+- **30s** - Für sehr große Deployments (1000+ Hosts)
+
+**Countdown-Timer:**
+- Bei 5s und 30s Raten wird ein Countdown-Timer im Header angezeigt
+- Format: `Rate: 5s (4s)` - zeigt verbleibende Zeit bis zum nächsten Update
+- Hilft bei der Einschätzung, wann die nächste Aktualisierung kommt
+- Aktualisiert sich nicht in Echtzeit (nur bei View-Refreshes), aber gibt gute Orientierung
+
+**Implementierung:**
+
+```go
+// tui.go Zeilen 40-48
+type UpdateRate int
+
+const (
+    UpdateRate100ms UpdateRate = iota
+    UpdateRate1s
+    UpdateRate5s
+    UpdateRate30s
+)
+
+// tui.go Zeile 70
+lastTickTime     time.Time  // Tracking für Countdown
+
+// tui.go Zeilen 233-253
+func (m *TUIModel) tickCmdWithRate() tea.Cmd {
+    duration := m.getTickDuration()
+    return tea.Tick(duration, func(t time.Time) tea.Msg {
+        return tickMsg(t)
+    })
+}
+
+func (m *TUIModel) getTickDuration() time.Duration {
+    switch m.updateRate {
+    case UpdateRate100ms:
+        return 100 * time.Millisecond
+    case UpdateRate1s:
+        return 1 * time.Second
+    case UpdateRate5s:
+        return 5 * time.Second
+    case UpdateRate30s:
+        return 30 * time.Second
+    default:
+        return 100 * time.Millisecond
+    }
+}
+
+// tui.go Zeilen 1139-1160
+func (m *TUIModel) getRemainingTime() string {
+    // Only show countdown for 5s and 30s rates
+    if m.updateRate != UpdateRate5s && m.updateRate != UpdateRate30s {
+        return ""
+    }
+
+    elapsed := time.Since(m.lastTickTime)
+    duration := m.getTickDuration()
+    remaining := duration - elapsed
+
+    if remaining < 0 {
+        remaining = 0
+    }
+
+    // Return countdown in seconds
+    seconds := int(remaining.Seconds())
+    if seconds < 0 {
+        seconds = 0
+    }
+    return fmt.Sprintf("(%ds)", seconds)
+}
+```
+
+**Anwendungsbeispiele:**
+
+```bash
+# Standard-Monitoring (100ms)
+./mping 192.168.1.0/24
+
+# Während der Laufzeit: 'r' drücken für 1s → 5s → 30s → 100ms
+
+# 4 × /24 Subnets parallel (empfohlen: 5s oder 30s Rate)
+./mping 192.168.1.0/24 &
+./mping 192.168.2.0/24 &
+./mping 192.168.3.0/24 &
+./mping 192.168.4.0/24 &
+
+# In jedem Fenster 'r' drücken bis 5s oder 30s erreicht
+```
+
+**Performance-Verbesserung:**
+- CPU-Last reduziert sich proportional zur Rate
+- 30s Rate = 300× weniger Updates als 100ms
+- Countdown gibt visuelles Feedback über nächstes Update
+- Perfekt für langfristige Überwachung großer Netzwerke

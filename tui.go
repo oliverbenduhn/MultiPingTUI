@@ -37,6 +37,16 @@ const (
 	SortByIP
 )
 
+// UpdateRate represents the refresh rate
+type UpdateRate int
+
+const (
+	UpdateRate100ms UpdateRate = iota
+	UpdateRate1s
+	UpdateRate5s
+	UpdateRate30s
+)
+
 // TUIModel is the bubbletea model for the TUI
 type TUIModel struct {
 	wh               *WrapperHolder
@@ -56,6 +66,8 @@ type TUIModel struct {
 	visibleColumns   map[int]bool    // tracks which columns are visible (1-6)
 	statsCache       map[string]PWStats // cache stats per wrapper to avoid recalculation
 	statsCacheTime   time.Time       // when stats were last calculated
+	updateRate       UpdateRate      // current update rate
+	lastTickTime     time.Time       // when last tick happened
 }
 
 // tickMsg is sent every 100ms to update the display
@@ -75,6 +87,7 @@ type keyMap struct {
 	EditHosts   key.Binding
 	HideHost    key.Binding
 	ShowAll     key.Binding
+	CycleRate   key.Binding
 }
 
 var keys = keyMap{
@@ -125,6 +138,10 @@ var keys = keyMap{
 	ShowAll: key.NewBinding(
 		key.WithKeys("insert"),
 		key.WithHelp("ins", "show all"),
+	),
+	CycleRate: key.NewBinding(
+		key.WithKeys("r"),
+		key.WithHelp("r", "cycle update rate"),
 	),
 }
 
@@ -199,20 +216,40 @@ func NewTUIModel(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMo
 		visibleColumns:   visibleCols,
 		statsCache:       make(map[string]PWStats),
 		statsCacheTime:   time.Time{},
+		updateRate:       UpdateRate100ms, // Default: 100ms
+		lastTickTime:     time.Now(),
 	}
 }
 
 func (m *TUIModel) Init() tea.Cmd {
+	// Don't block in Init() - let first View() happen quickly
+	// Cache will be filled by first tick
 	return tea.Batch(
-		tickCmd(),
+		m.tickCmd(),
 		tea.EnterAltScreen,
 	)
 }
 
-func tickCmd() tea.Cmd {
+// tickCmd returns a command that ticks every 100ms for UI updates
+func (m *TUIModel) tickCmd() tea.Cmd {
 	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+func (m *TUIModel) getTickDuration() time.Duration {
+	switch m.updateRate {
+	case UpdateRate100ms:
+		return 100 * time.Millisecond
+	case UpdateRate1s:
+		return 1 * time.Second
+	case UpdateRate5s:
+		return 5 * time.Second
+	case UpdateRate30s:
+		return 30 * time.Second
+	default:
+		return 100 * time.Millisecond
+	}
 }
 
 // updateStatsCache updates the cached stats for all wrappers
@@ -230,8 +267,13 @@ func (m *TUIModel) getCachedStats(wrapper PingWrapperInterface) PWStats {
 	if stats, ok := m.statsCache[wrapper.Host()]; ok {
 		return stats
 	}
-	// Fallback if cache miss (shouldn't happen)
-	return wrapper.CalcStats(2 * 1e9)
+	// Cache miss - return empty stats instead of calling CalcStats()
+	// This prevents blocking on first View() before cache is filled
+	return PWStats{
+		hrepr:  wrapper.Host(),
+		iprepr: wrapper.Host(),
+		state:  false,
+	}
 }
 
 func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -242,9 +284,19 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		// Update stats cache for all wrappers
-		m.updateStatsCache()
-		return m, tickCmd()
+		now := time.Now()
+		elapsed := now.Sub(m.lastTickTime)
+		interval := m.getTickDuration()
+
+		// Check if it's time for a stats update
+		if elapsed >= interval {
+			// Update stats cache for all wrappers
+			m.updateStatsCache()
+			m.lastTickTime = now
+		}
+
+		// Always continue UI ticker at 100ms
+		return m, m.tickCmd()
 
 	case tea.KeyMsg:
 		if m.editingHosts {
@@ -371,6 +423,12 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sortMode = nextSortMode(m.sortMode)
 			return m, nil
 
+		case key.Matches(msg, keys.CycleRate):
+			m.updateRate = nextUpdateRate(m.updateRate)
+			m.statusMessage = fmt.Sprintf("Update rate: %s", m.getUpdateRateString())
+			// No need to restart any tickers - the time-based calculation handles everything
+			return m, nil
+
 		case key.Matches(msg, keys.HideHost):
 			if m.cursor >= 0 && !m.showDetails {
 				filtered := m.getFilteredWrappers()
@@ -440,10 +498,18 @@ func (m *TUIModel) View() string {
 	s.WriteString(titleStyle.Render(VersionString()))
 	s.WriteString("\n")
 
-	// Header with filter and sort info
+	// Header with filter, sort, and update rate info
 	filterText := fmt.Sprintf("Filter: %s", m.getFilterModeString())
 	sortText := fmt.Sprintf("Sort: %s", m.getSortModeString())
-	header := headerStyle.Render(fmt.Sprintf(" %s │ %s ", filterText, sortText))
+	rateText := fmt.Sprintf("Rate: %s", m.getUpdateRateString())
+
+	// Add countdown for 5s and 30s rates
+	countdown := m.getRemainingTime()
+	if countdown != "" {
+		rateText += " " + countdown
+	}
+
+	header := headerStyle.Render(fmt.Sprintf(" %s │ %s │ %s ", filterText, sortText, rateText))
 	s.WriteString(header)
 	s.WriteString("\n\n")
 
@@ -475,7 +541,7 @@ func (m *TUIModel) View() string {
 	} else {
 		s.WriteString(helpStyle.Render("↑↓/jk: navigate │ enter: details │ e: edit hosts │ 1-6: toggle columns │ q: quit"))
 		s.WriteString("\n")
-		s.WriteString(helpStyle.Render("f: cycle filters (smart/online/offline/all) │ s: cycle sort (name/status/rtt/last/ip)"))
+		s.WriteString(helpStyle.Render("f: cycle filters (smart/online/offline/all) │ s: cycle sort (name/status/rtt/last/ip) │ r: cycle rate (100ms/1s/5s/30s)"))
 	}
 
 	return s.String()
@@ -1055,6 +1121,61 @@ func nextSortMode(current SortMode) SortMode {
 	default:
 		return SortByName
 	}
+}
+
+func nextUpdateRate(current UpdateRate) UpdateRate {
+	switch current {
+	case UpdateRate100ms:
+		return UpdateRate1s
+	case UpdateRate1s:
+		return UpdateRate5s
+	case UpdateRate5s:
+		return UpdateRate30s
+	case UpdateRate30s:
+		return UpdateRate100ms
+	default:
+		return UpdateRate100ms
+	}
+}
+
+func (m *TUIModel) getUpdateRateString() string {
+	switch m.updateRate {
+	case UpdateRate100ms:
+		return "100ms"
+	case UpdateRate1s:
+		return "1s"
+	case UpdateRate5s:
+		return "5s"
+	case UpdateRate30s:
+		return "30s"
+	default:
+		return "100ms"
+	}
+}
+
+// getRemainingTime returns a countdown string for 5s and 30s rates
+func (m *TUIModel) getRemainingTime() string {
+	// Only show countdown for 5s and 30s rates
+	if m.updateRate != UpdateRate5s && m.updateRate != UpdateRate30s {
+		return ""
+	}
+
+	elapsed := time.Since(m.lastTickTime)
+	duration := m.getTickDuration()
+	remaining := duration - elapsed
+
+	// If remaining is negative or zero, show full duration
+	// This prevents showing "0s" and makes the countdown more intuitive
+	if remaining <= 0 {
+		remaining = duration
+	}
+
+	// Return countdown in seconds (rounded up so we never show 0)
+	seconds := int(remaining.Seconds())
+	if seconds <= 0 {
+		seconds = int(duration.Seconds())
+	}
+	return fmt.Sprintf("(%ds)", seconds)
 }
 
 func parseHostsInput(raw string) []string {

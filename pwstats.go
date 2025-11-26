@@ -15,7 +15,6 @@ type PWStats struct {
 	last_loss_duration     int64
 	last_seen_nano         int64
 	state                  bool
-	first_called           bool
 	has_ever_received      bool
 	state_initialized      bool
 	skip_next_up_highlight bool
@@ -61,18 +60,17 @@ func (p *PWStats) ComputeState(timeout_threshold int64) {
 	}
 
 	if !prevState && new_state {
+		// Host came back online (down→up transition)
 		if p.skip_next_up_highlight {
-			// Consume the initial transition without highlighting
+			// This is the first transition after startup - don't highlight it
 			p.skip_next_up_highlight = false
 		} else {
+			// Normal transition - highlight it blue for 20 seconds
 			p.last_up_transition = now
 		}
-		if p.first_called {
-			p.last_loss_nano = time.Now().UnixNano()
-			p.last_loss_duration = old_last_seen
-		} else {
-			p.first_called = true
-		}
+		// Always record the loss event (timestamp and duration)
+		p.last_loss_nano = now
+		p.last_loss_duration = old_last_seen
 	}
 	if p.state != new_state {
 		var sb strings.Builder

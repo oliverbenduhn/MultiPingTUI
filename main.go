@@ -2,15 +2,18 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"strings"
 	"time"
 )
 
-var Version = "v1.0.3"
+var Version = "v1.0.5"
 var CommitHash = "dev"
 var BuildTimestamp = "1970-01-01T00:00:00"
 var Builder = "go version go1.xx.y os/platform"
@@ -28,6 +31,8 @@ type Options struct {
 	tui                 *bool
 	notui               *bool
 	hostfile            *string
+	webPort             *int
+	pprofAddr           *string
 }
 
 func main() {
@@ -42,6 +47,8 @@ func main() {
 	options.tui = flag.Bool("tui", true, "use interactive TUI mode (default) (deprecated, use -notui)")
 	options.notui = flag.Bool("notui", false, "disable interactive TUI mode")
 	options.hostfile = flag.String("hostfile", "", "file with hosts (one per line, CIDR allowed)")
+	options.webPort = flag.Int("web-port", 8080, "port for web status server in TUI mode (0 to disable)")
+	options.pprofAddr = flag.String("pprof", "", "start pprof http server at this addr (e.g., localhost:6060); disabled by default")
 	once := flag.Bool("once", false, "ping once and exit")
 	onlyOnline := flag.Bool("only-online", false, "show only online hosts (initial filter)")
 	onlyOffline := flag.Bool("only-offline", false, "show only offline hosts (initial filter)")
@@ -60,6 +67,10 @@ func main() {
 
 	if *options.notui {
 		*options.tui = false
+	}
+
+	if *options.pprofAddr != "" {
+		go startPprof(*options.pprofAddr)
 	}
 
 	var rawHosts []string
@@ -102,7 +113,7 @@ func main() {
 			fmt.Println("no host provided")
 			return
 		}
-		RunPingOnce(hosts, *onlyOnline, *onlyOffline)
+		RunPingOnce(hosts, *onlyOnline, *onlyOffline, *options.log)
 		return
 	}
 
@@ -130,7 +141,7 @@ func main() {
 	// TUI mode (default, interactive)
 	if *options.tui && !*options.quiet {
 		initialFilter := determineInitialFilter(*onlyOnline, *onlyOffline)
-		err := RunTUI(wh, transition_writer, initialFilter)
+		err := RunTUI(wh, transition_writer, initialFilter, *options.webPort)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
 			os.Exit(1)
@@ -231,4 +242,12 @@ func loadHostsFromFile(path string) ([]string, error) {
 		return nil, err
 	}
 	return hosts, nil
+}
+
+// startPprof launches a pprof HTTP server on the given address.
+func startPprof(addr string) {
+	fmt.Fprintf(os.Stderr, "pprof listening on http://%s/debug/pprof/\n", addr)
+	if err := http.ListenAndServe(addr, nil); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		fmt.Fprintf(os.Stderr, "pprof server error: %v\n", err)
+	}
 }

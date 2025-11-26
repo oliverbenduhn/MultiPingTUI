@@ -40,7 +40,6 @@ func (p *PWStats) ComputeState(timeout_threshold int64) {
 	prevState := p.state
 	prevSeen := p.state_initialized
 
-	old_last_seen := p.last_seen_nano
 	p.last_seen_nano = now - p.lastrecv
 	new_state := p.last_seen_nano < timeout_threshold
 	// TODO: Algo to review completely
@@ -70,7 +69,8 @@ func (p *PWStats) ComputeState(timeout_threshold int64) {
 		}
 		// Always record the loss event (timestamp and duration)
 		p.last_loss_nano = now
-		p.last_loss_duration = old_last_seen
+		// Calculate outage duration: from last successful receive until now
+		p.last_loss_duration = now - p.lastrecv
 	}
 	if p.state != new_state {
 		var sb strings.Builder

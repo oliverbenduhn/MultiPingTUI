@@ -62,12 +62,13 @@ type TUIModel struct {
 	editingHosts     bool
 	hostInput        string
 	statusMessage    string
-	hiddenHosts      map[string]bool // tracks hidden hosts by Host() name
-	visibleColumns   map[int]bool    // tracks which columns are visible (1-6)
+	hiddenHosts      map[string]bool    // tracks hidden hosts by Host() name
+	visibleColumns   map[int]bool       // tracks which columns are visible (1-6)
 	statsCache       map[string]PWStats // cache stats per wrapper to avoid recalculation
-	statsCacheTime   time.Time       // when stats were last calculated
-	updateRate       UpdateRate      // current update rate
-	lastTickTime     time.Time       // when last tick happened
+	statsCacheTime   time.Time          // when stats were last calculated
+	updateRate       UpdateRate         // current update rate
+	lastTickTime     time.Time          // when last tick happened
+	statusServer     *StatusServer      // optional web status server
 }
 
 // tickMsg is sent every 100ms to update the display
@@ -417,10 +418,12 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.filterMode = nextFilterMode(m.filterMode)
 			m.cursor = -1
 			m.scrollOffset = 0
+			m.pushStatusView()
 			return m, nil
 
 		case key.Matches(msg, keys.SortCycle):
 			m.sortMode = nextSortMode(m.sortMode)
+			m.pushStatusView()
 			return m, nil
 
 		case key.Matches(msg, keys.CycleRate):
@@ -441,6 +444,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.cursor--
 					}
 					m.adjustScroll()
+					m.pushStatusView()
 				}
 			}
 			return m, nil
@@ -453,6 +457,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.statusMessage = "No hidden hosts"
 			}
+			m.pushStatusView()
 			return m, nil
 
 		case key.Matches(msg, keys.EditHosts):
@@ -479,6 +484,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.statusMessage = fmt.Sprintf("Column %d (%s) hidden", colNum, colName)
 				}
+				m.pushStatusView()
 				return m, nil
 			}
 		}
@@ -623,6 +629,7 @@ func (m *TUIModel) renderListView(wrappers []PingWrapperInterface) string {
 	}
 
 	// Shrink columns (starting with the widest) until we fit, but not below mins
+shrinkColumns:
 	for totalWidth > target {
 		switch {
 		case nameWidth > minName && m.visibleColumns[2]:
@@ -637,8 +644,7 @@ func (m *TUIModel) renderListView(wrappers []PingWrapperInterface) string {
 			rttWidth--
 		default:
 			// We hit mins; break to avoid infinite loop
-			totalWidth = target
-			break
+			break shrinkColumns
 		}
 		totalWidth = 0
 		if m.visibleColumns[1] {
@@ -1095,6 +1101,18 @@ func (m *TUIModel) getColumnName(colNum int) string {
 	}
 }
 
+func (m *TUIModel) pushStatusView() {
+	if m.statusServer == nil {
+		return
+	}
+	m.statusServer.UpdateView(ServerView{
+		Filter: m.filterMode,
+		Sort:   m.sortMode,
+		Hidden: cloneHiddenHosts(m.hiddenHosts),
+		Cols:   visibleColumnsList(m.visibleColumns),
+	})
+}
+
 func nextFilterMode(current FilterMode) FilterMode {
 	switch current {
 	case FilterSmart:
@@ -1121,6 +1139,24 @@ func nextSortMode(current SortMode) SortMode {
 	default:
 		return SortByName
 	}
+}
+
+func cloneHiddenHosts(src map[string]bool) map[string]bool {
+	dst := make(map[string]bool, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func visibleColumnsList(cols map[int]bool) []int {
+	var out []int
+	for i := 1; i <= 6; i++ {
+		if cols[i] {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 func nextUpdateRate(current UpdateRate) UpdateRate {
@@ -1203,14 +1239,14 @@ func ipKey(s string) []byte {
 }
 
 // RunTUI starts the TUI interface with an initial filter mode applied
-func RunTUI(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode) (finalErr error) {
+func RunTUI(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode, webPort int) (finalErr error) {
 	// Early panic protection before any terminal manipulation
 	defer func() {
 		if r := recover(); r != nil {
 			// Ensure terminal is restored
-			fmt.Print("\033[?25h")         // Show cursor
-			fmt.Print("\033[2J\033[H")     // Clear screen
-			fmt.Print("\033[?1049l")       // Exit alt screen
+			fmt.Print("\033[?25h")     // Show cursor
+			fmt.Print("\033[2J\033[H") // Clear screen
+			fmt.Print("\033[?1049l")   // Exit alt screen
 			finalErr = fmt.Errorf("panic in TUI: %v\n%s", r, debug.Stack())
 			fmt.Fprintf(os.Stderr, "PANIC in TUI:\n%v\n%s\n", r, debug.Stack())
 		}
@@ -1258,9 +1294,29 @@ func RunTUI(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode) (
 		return fmt.Errorf("timeout waiting for wrappers to start (60s)")
 	}
 
-	defer wh.Stop()
-
 	model := NewTUIModel(wh, tw, initialFilter)
+	var statusServer *StatusServer
+	if webPort > 0 {
+		initialView := ServerView{
+			Filter: model.filterMode,
+			Sort:   model.sortMode,
+			Hidden: cloneHiddenHosts(model.hiddenHosts),
+			Cols:   visibleColumnsList(model.visibleColumns),
+		}
+		var err error
+		statusServer, err = StartStatusServer(wh, model.getCachedStats, initialView, webPort)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to start status server on port %d: %v\n", webPort, err)
+		} else {
+			model.statusServer = statusServer
+		}
+	}
+
+	defer wh.Stop()
+	if statusServer != nil {
+		defer statusServer.Stop()
+	}
+
 	p := tea.NewProgram(
 		model,
 		tea.WithAltScreen(),

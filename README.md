@@ -13,6 +13,7 @@
 - 👁️ **Column Toggle** - Show/hide columns with number keys (1-6)
 - 🌐 **CIDR Support** - Scan entire subnets (192.168.1.0/24)
 - 📝 **Transition Logging** - JSON log of all state changes
+- 📡 **Web Status Mirror** - Local status server in TUI mode (http://127.0.0.1:8080)
 
 ## Demo
 
@@ -124,6 +125,15 @@ Use `-once` to ping each target once and exit, useful for scripting:
 ```bash
 mping -once 192.168.1.0/24
 ```
+
+### Status Web Server
+
+In TUI mode a small read-only status server is started on `127.0.0.1:8080` to mirror the current view:
+
+- `/` plain text summary
+- `/json` JSON array with host states, RTT, and last reply/loss information
+
+Use `-web-port <port>` to change the port or `-web-port 0` to disable the server.
 
 ### Display filtering
 

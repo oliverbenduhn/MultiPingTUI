@@ -1,0 +1,12 @@
+./checker_linux.go
+./doc.go
+./err.go
+./event.go
+./pipe_pool.go
+./pipe_pool_dummy.go
+./pipe_pool_sync_pool.go
+./result_pipes.go
+./result_pipes_mu.go
+./result_pipes_sync_map.go
+./socket.go
+./socket_linux.go

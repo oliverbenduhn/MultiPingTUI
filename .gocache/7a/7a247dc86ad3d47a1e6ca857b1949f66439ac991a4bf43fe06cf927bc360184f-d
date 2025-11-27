@@ -1,0 +1,9 @@
+./arena.go
+./doc.go
+./handy.go
+./parser.go
+./pool.go
+./scanner.go
+./update.go
+./util.go
+./validate.go

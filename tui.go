@@ -750,11 +750,14 @@ shrinkColumns:
 			rtt = "-"
 		}
 
+		// Only show last reply when host is offline to avoid clutter for healthy hosts
 		lastReply := "-"
-		if stats.lastrecv > 0 {
-			lastReply = time.Duration(stats.last_seen_nano).Round(time.Second).String() + " ago"
-		} else {
-			lastReply = "never"
+		if !isOnline {
+			if stats.lastrecv > 0 {
+				lastReply = time.Duration(stats.last_seen_nano).Round(time.Second).String() + " ago"
+			} else {
+				lastReply = "never"
+			}
 		}
 
 		lastLoss := "-"

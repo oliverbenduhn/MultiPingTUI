@@ -13,6 +13,7 @@ type PingWrapperInterface interface {
 	Stop()
 	Host() string
 	CalcStats(int64) PWStats
+	Stats() *PWStats
 }
 
 var re_host_w_proto = regexp.MustCompile(`^(tcp|ip)([46])?://(\[?.+?\]?)(?::(\d+))?$`)

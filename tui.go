@@ -724,7 +724,7 @@ shrinkColumns:
 			status = "✗"
 		}
 
-		name := stats.hrepr
+		name := stats.GetHostRepr()
 		if name == "" {
 			name = wrapper.Host()
 		}
@@ -947,8 +947,8 @@ func (m *TUIModel) getFilteredWrappers() []PingWrapperInterface {
 			}
 
 			// Use DNS name (hrepr) if available, otherwise use Host()
-			nameI := statsI.hrepr
-			nameJ := statsJ.hrepr
+			nameI := statsI.GetHostRepr()
+			nameJ := statsJ.GetHostRepr()
 			if nameI == "" {
 				nameI = filtered[i].Host()
 			}
@@ -1021,8 +1021,8 @@ func (m *TUIModel) getFilteredWrappers() []PingWrapperInterface {
 			}
 
 			// Both are stable online hosts with no history of loss: sort by name
-			nameI := statsI.hrepr
-			nameJ := statsJ.hrepr
+			nameI := statsI.GetHostRepr()
+			nameJ := statsJ.GetHostRepr()
 			if nameI == "" {
 				nameI = filtered[i].Host()
 			}

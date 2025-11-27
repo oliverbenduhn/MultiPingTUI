@@ -45,19 +45,12 @@ func (w *ProbingWrapper) Start() {
 		w.pinger.SetPrivileged(w.privileged)
 	}
 
-	if DebugMode {
-		fmt.Fprintf(os.Stderr, "DEBUG: Starting wrapper for %s, resolving DNS...\n", w.ip.String())
-	}
-
-	displayHost := hostDisplayName(w.host, w.ip)
-
-	if DebugMode {
-		fmt.Fprintf(os.Stderr, "DEBUG: Resolved %s -> %s\n", w.ip.String(), displayHost)
-	}
+	// Use host as initial display name (DNS lookup happens later via periodic updates)
+	displayHost := w.host
 
 	w.hstring = fmt.Sprintf("%s (%s)", displayHost, w.ip.String())
 
-	w.stats.hrepr = displayHost
+	w.stats.SetHostRepr(displayHost)
 	w.stats.iprepr = w.ip.IP.String()
 
 	go func(w *ProbingWrapper) {
@@ -97,6 +90,10 @@ func (w *ProbingWrapper) Host() string {
 func (w *ProbingWrapper) CalcStats(timeout_threshold int64) PWStats {
 	w.stats.ComputeState(timeout_threshold)
 	return *w.stats
+}
+
+func (w *ProbingWrapper) Stats() *PWStats {
+	return w.stats
 }
 
 var divs = []time.Duration{

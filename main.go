@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-var Version = "v1.0.5"
+var Version = "v1.0.6"
 var CommitHash = "dev"
 var BuildTimestamp = "1970-01-01T00:00:00"
 var Builder = "go version go1.xx.y os/platform"
@@ -141,6 +141,8 @@ func main() {
 	// TUI mode (default, interactive)
 	if *options.tui && !*options.quiet {
 		initialFilter := determineInitialFilter(*onlyOnline, *onlyOffline)
+		wh.Start()
+		wh.StartPeriodicDNSUpdates() // Start periodic DNS updates after wrappers are started
 		err := RunTUI(wh, transition_writer, initialFilter, *options.webPort)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
@@ -160,6 +162,7 @@ func main() {
 	}()
 
 	wh.Start()
+	wh.StartPeriodicDNSUpdates() // Start periodic DNS updates after wrappers are started
 
 	if !*options.quiet {
 		display := NewDisplay(wh)

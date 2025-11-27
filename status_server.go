@@ -482,7 +482,7 @@ func (s *StatusServer) collectStatuses() []HostStatus {
 	for _, wrapper := range filtered {
 		stats := s.statsProvider(wrapper)
 
-		host := stats.hrepr
+		host := stats.GetHostRepr()
 		if host == "" {
 			host = wrapper.Host()
 		}
@@ -638,8 +638,8 @@ func (s *StatusServer) filterAndSort(wrappers []PingWrapperInterface, view Serve
 			if onlineI != onlineJ {
 				return onlineI
 			}
-			nameI := statsI.hrepr
-			nameJ := statsJ.hrepr
+			nameI := statsI.GetHostRepr()
+			nameJ := statsJ.GetHostRepr()
 			if nameI == "" {
 				nameI = filtered[i].Host()
 			}
@@ -699,8 +699,8 @@ func (s *StatusServer) filterAndSort(wrappers []PingWrapperInterface, view Serve
 			if hasLossI && hasLossJ {
 				return statsI.last_loss_nano > statsJ.last_loss_nano
 			}
-			nameI := statsI.hrepr
-			nameJ := statsJ.hrepr
+			nameI := statsI.GetHostRepr()
+			nameJ := statsJ.GetHostRepr()
 			if nameI == "" {
 				nameI = filtered[i].Host()
 			}

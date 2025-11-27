@@ -12,6 +12,8 @@ type WrapperHolder struct {
 	options           Options
 	transition_writer *TransitionWriter
 	mu                sync.RWMutex
+	dnsUpdateStop     chan struct{} // Signal to stop DNS update goroutine
+	dnsUpdateRunning  bool
 }
 
 func (w *WrapperHolder) InitHosts(hosts []string, options Options, transition_writer *TransitionWriter) {
@@ -30,6 +32,9 @@ func (w *WrapperHolder) setHosts(hosts []string) {
 }
 
 func (w *WrapperHolder) ReplaceHosts(hosts []string) {
+	// Stop DNS updates while replacing hosts
+	w.StopPeriodicDNSUpdates()
+
 	w.mu.Lock()
 	old := w.ping_wrappers
 	w.ping_wrappers = make([]PingWrapperInterface, len(hosts))
@@ -50,6 +55,9 @@ func (w *WrapperHolder) ReplaceHosts(hosts []string) {
 			time.Sleep(1 * time.Millisecond)
 		}
 	}
+
+	// Restart DNS updates for new hosts
+	w.StartPeriodicDNSUpdates()
 }
 
 func (w *WrapperHolder) Wrappers() []PingWrapperInterface {
@@ -112,7 +120,111 @@ func (w *WrapperHolder) Start() {
 }
 
 func (w *WrapperHolder) Stop() {
+	// Stop DNS update goroutine first
+	w.StopPeriodicDNSUpdates()
+
 	for _, ping_wrapper := range w.Wrappers() {
 		ping_wrapper.Stop()
+	}
+}
+
+// StartPeriodicDNSUpdates starts a goroutine that performs DNS lookups for online hosts.
+// Initial lookup happens after 3 seconds, then every 60 seconds.
+// Only updates DNS names for hosts that are currently online.
+func (w *WrapperHolder) StartPeriodicDNSUpdates() {
+	w.mu.Lock()
+	if w.dnsUpdateRunning {
+		w.mu.Unlock()
+		return
+	}
+	w.dnsUpdateStop = make(chan struct{})
+	w.dnsUpdateRunning = true
+	w.mu.Unlock()
+
+	if DebugMode {
+		fmt.Fprintf(os.Stderr, "DEBUG: Starting periodic DNS update goroutine (initial: 3s, interval: 60s)\n")
+	}
+
+	go func() {
+		// Initial delay of 3 seconds (gives time for hosts to become online)
+		initialTimer := time.NewTimer(3 * time.Second)
+		defer initialTimer.Stop()
+
+		select {
+		case <-initialTimer.C:
+			w.performDNSUpdates()
+		case <-w.dnsUpdateStop:
+			return
+		}
+
+		// Periodic updates every 60 seconds
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				w.performDNSUpdates()
+			case <-w.dnsUpdateStop:
+				return
+			}
+		}
+	}()
+}
+
+// StopPeriodicDNSUpdates stops the DNS update goroutine
+func (w *WrapperHolder) StopPeriodicDNSUpdates() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.dnsUpdateRunning {
+		return
+	}
+
+	close(w.dnsUpdateStop)
+	w.dnsUpdateRunning = false
+
+	if DebugMode {
+		fmt.Fprintf(os.Stderr, "DEBUG: Stopped periodic DNS update goroutine\n")
+	}
+}
+
+// performDNSUpdates updates DNS names for all online hosts
+func (w *WrapperHolder) performDNSUpdates() {
+	if SkipDNS {
+		return
+	}
+
+	wrappers := w.Wrappers()
+	updated := 0
+
+	// Use semaphore to limit concurrent DNS lookups
+	sem := make(chan struct{}, 20)
+	var wg sync.WaitGroup
+
+	for _, wrapper := range wrappers {
+		stats := wrapper.CalcStats(2_000_000_000) // 2s threshold
+
+		// Only update DNS for online hosts
+		if !stats.state || stats.error_message != "" {
+			continue
+		}
+
+		wg.Add(1)
+		go func(pw PingWrapperInterface) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			if updateHostDisplayName(pw) {
+				updated++
+			}
+		}(wrapper)
+	}
+
+	wg.Wait()
+
+	if DebugMode && updated > 0 {
+		fmt.Fprintf(os.Stderr, "DEBUG: Updated DNS names for %d online hosts\n", updated)
 	}
 }

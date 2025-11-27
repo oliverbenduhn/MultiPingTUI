@@ -23,9 +23,10 @@ type TCPPingWrapper struct {
 }
 
 func (w *TCPPingWrapper) Start() {
-	displayHost := hostDisplayName(w.host, w.ip)
+	// Use host as initial display name (DNS lookup happens later via periodic updates)
+	displayHost := w.host
 	w.hstring = fmt.Sprintf("tcp://%v:%v (%v:%v)", displayHost, w.port, w.ip.String(), w.port)
-	w.stats.hrepr = fmt.Sprintf("tcp://%v:%v", displayHost, w.port)
+	w.stats.SetHostRepr(fmt.Sprintf("tcp://%v:%v", displayHost, w.port))
 	w.stats.iprepr = w.ip.IP.String()
 
 	w.str_tgt = fmt.Sprintf("%v:%v", w.ip.String(), w.port)
@@ -80,4 +81,8 @@ func (w *TCPPingWrapper) Host() string {
 func (w *TCPPingWrapper) CalcStats(timeout_threshold int64) PWStats {
 	w.stats.ComputeState(timeout_threshold)
 	return *w.stats
+}
+
+func (w *TCPPingWrapper) Stats() *PWStats {
+	return w.stats
 }

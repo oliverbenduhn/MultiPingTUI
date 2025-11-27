@@ -28,9 +28,10 @@ var time_extractor = regexp.MustCompile(`time[=<]([\d\.]+) *(.?s)`)
 var time_extractor_non_local = regexp.MustCompile(`[=<]([\d\.]+) *(.?s)`)
 
 func (w *SystemPingWrapper) Start() {
-	displayHost := hostDisplayName(w.host, w.ip)
+	// Use host as initial display name (DNS lookup happens later via periodic updates)
+	displayHost := w.host
 	w.hstring = fmt.Sprintf("%s (%s)", displayHost, w.ip.String())
-	w.stats.hrepr = displayHost
+	w.stats.SetHostRepr(displayHost)
 	w.stats.iprepr = w.ip.String()
 
 	var path string
@@ -97,4 +98,8 @@ func (w *SystemPingWrapper) Host() string {
 func (w *SystemPingWrapper) CalcStats(timeout_threshold int64) PWStats {
 	w.stats.ComputeState(timeout_threshold)
 	return *w.stats
+}
+
+func (w *SystemPingWrapper) Stats() *PWStats {
+	return w.stats
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,6 +27,7 @@ type PWStats struct {
 	error_message          string
 	hrepr                  string
 	iprepr                 string
+	hreprMu                sync.RWMutex // protects hrepr for concurrent DNS updates
 }
 
 func (p *PWStats) ComputeState(timeout_threshold int64) {
@@ -93,7 +95,7 @@ func (p *PWStats) ComputeState(timeout_threshold int64) {
 			}{
 				time.Unix(0, now).String(),
 				now,
-				p.hrepr,
+				p.GetHostRepr(),
 				p.iprepr,
 				transition,
 				new_state,
@@ -119,4 +121,18 @@ func (p PWStats) OnlineUptime(now int64) time.Duration {
 		total = 0
 	}
 	return time.Duration(total)
+}
+
+// GetHostRepr returns the host representation (display name) thread-safely
+func (p *PWStats) GetHostRepr() string {
+	p.hreprMu.RLock()
+	defer p.hreprMu.RUnlock()
+	return p.hrepr
+}
+
+// SetHostRepr sets the host representation (display name) thread-safely
+func (p *PWStats) SetHostRepr(hrepr string) {
+	p.hreprMu.Lock()
+	defer p.hreprMu.Unlock()
+	p.hrepr = hrepr
 }

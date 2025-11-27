@@ -67,7 +67,13 @@ func (d *Display) Update() {
 			continue
 		}
 
-		sb.WriteString(fmt.Sprintf(d.host_format_string, wrapper.Host()))
+		// Use DNS name (hrepr) if available, otherwise fall back to original host
+		displayName := stats.GetHostRepr()
+		if displayName == "" {
+			displayName = wrapper.Host()
+		}
+
+		sb.WriteString(fmt.Sprintf(d.host_format_string, displayName))
 		if stats.error_message != "" {
 			sb.WriteString(bold_red.Sprintf("❌ %v", stats.error_message))
 		} else if stats.last_seen_nano > 2*1e9 {

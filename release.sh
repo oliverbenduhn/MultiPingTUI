@@ -3,7 +3,12 @@
 MODULE=$(grep module go.mod | cut -d\  -f2)
 BINBASE="mping"
 VERSION=${VERSION:-$GITHUB_REF_NAME}
-VERSION=${VERSION:-v1.0.6}
+# Fallback: read version from main.go to keep single source of truth
+if [ -z "$VERSION" ]; then
+  VERSION=$(grep -E '^var Version = "v[0-9]+\.[0-9]+\.[0-9]+"' main.go | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+fi
+# Last resort
+VERSION=${VERSION:-v0.0.0}
 PKG_VERSION=${VERSION#v}
 MAINTAINER=${MAINTAINER:-"oliverbenduhn"}
 COMMIT_HASH="$(git rev-parse --short HEAD 2>/dev/null)"

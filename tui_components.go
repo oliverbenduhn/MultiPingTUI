@@ -131,6 +131,8 @@ type HostListModel struct {
 	filterMode     FilterMode
 	sortMode       SortMode
 	hiddenHosts    map[string]bool
+	cachedWrappers []PingWrapperInterface
+	cacheInvalidated bool
 }
 
 func NewHostListModel() HostListModel {
@@ -144,6 +146,7 @@ func NewHostListModel() HostListModel {
 		statsCache:     make(map[string]PWStats),
 		hiddenHosts:    make(map[string]bool),
 		sortMode:       SortByIP, // Default sort
+		cacheInvalidated: true,
 	}
 }
 

@@ -274,6 +274,7 @@ func (m *TUIModel) applyHostInput() {
 	} else {
 		m.statusMessage = fmt.Sprintf("Updated hosts (%d)", len(hosts))
 	}
+	m.hostList.cacheInvalidated = true
 	m.editingHosts = false
 }
 
@@ -295,7 +296,9 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if elapsed >= interval {
 			// Update stats cache for all wrappers
 			m.updateStatsCache()
+			m.updateStatsCache()
 			m.lastTickTime = now
+			m.hostList.cacheInvalidated = true
 		}
 		
 		// Update countdown in header
@@ -424,12 +427,14 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.header.filterMode = m.hostList.filterMode
 			m.hostList.cursor = -1
 			m.hostList.scrollOffset = 0
+			m.hostList.cacheInvalidated = true
 			m.pushStatusView()
 			return m, nil
 
 		case key.Matches(msg, keys.SortCycle):
 			m.hostList.sortMode = nextSortMode(m.hostList.sortMode)
 			m.header.sortMode = m.hostList.sortMode
+			m.hostList.cacheInvalidated = true
 			m.pushStatusView()
 			return m, nil
 
@@ -451,6 +456,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.hostList.cursor--
 					}
 					m.hostList.adjustScroll()
+					m.hostList.cacheInvalidated = true
 					m.pushStatusView()
 				}
 			}
@@ -464,6 +470,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.statusMessage = "No hidden hosts"
 			}
+			m.hostList.cacheInvalidated = true
 			m.pushStatusView()
 			return m, nil
 

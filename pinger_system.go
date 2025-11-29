@@ -103,3 +103,7 @@ func (w *SystemPingWrapper) CalcStats(timeout_threshold int64) PWStats {
 func (w *SystemPingWrapper) Stats() *PWStats {
 	return w.stats
 }
+
+func (w *SystemPingWrapper) SetHostRepr(h string) {
+	w.stats.SetHostRepr(h)
+}

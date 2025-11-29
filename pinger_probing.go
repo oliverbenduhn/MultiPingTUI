@@ -99,6 +99,10 @@ func (w *ProbingWrapper) Stats() *PWStats {
 var divs = []time.Duration{
 	time.Duration(1), time.Duration(10), time.Duration(100), time.Duration(1000)}
 
+func (w *ProbingWrapper) SetHostRepr(h string) {
+	w.stats.SetHostRepr(h)
+}
+
 func round(d time.Duration, digits int) time.Duration {
 	switch {
 	case d > time.Second:

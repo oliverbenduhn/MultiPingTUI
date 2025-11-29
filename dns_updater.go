@@ -7,18 +7,26 @@ import (
 	"time"
 )
 
+type dnsCacheEntry struct {
+	name      string
+	expiresAt time.Time
+}
+
 // DNSUpdater handles periodic DNS lookups for online hosts
 type DNSUpdater struct {
 	wrappersSource func() []PingWrapperInterface
 	stopChan       chan struct{}
 	running        bool
 	mu             sync.Mutex
+	dnsCache       map[string]dnsCacheEntry
+	cacheMu        sync.RWMutex
 }
 
 // NewDNSUpdater creates a new DNSUpdater
 func NewDNSUpdater(wrappersSource func() []PingWrapperInterface) *DNSUpdater {
 	return &DNSUpdater{
 		wrappersSource: wrappersSource,
+		dnsCache:       make(map[string]dnsCacheEntry),
 	}
 }
 
@@ -102,16 +110,71 @@ func (d *DNSUpdater) performDNSUpdates() {
 			continue
 		}
 
+		// Check cache
+		d.cacheMu.RLock()
+		entry, found := d.dnsCache[stats.iprepr]
+		d.cacheMu.RUnlock()
+
+		if found && time.Now().Before(entry.expiresAt) {
+			// Cache hit, update wrapper if needed (though wrapper usually holds the state)
+			// Ideally we would set the cached name on the wrapper here if it was lost,
+			// but updateHostDisplayName does the lookup AND set.
+			// We should modify updateHostDisplayName or do the check here.
+			// For now, let's assume if it's in cache, the wrapper likely has it,
+			// OR we can skip the lookup.
+			// Actually, the wrapper stores the "hrepr".
+			// If we skip calling updateHostDisplayName, we rely on the wrapper keeping it.
+			// But if the wrapper doesn't have it yet (e.g. first run), we need to set it.
+			// Let's modify the logic to use the cache.
+			if stats.GetHostRepr() != "" {
+				continue // Already has a name and cache is valid
+			}
+			// If wrapper has no name but we have it in cache, set it
+			if entry.name != "" {
+				wrapper.SetHostRepr(entry.name)
+				continue
+			}
+		}
+
 		wg.Add(1)
 		go func(pw PingWrapperInterface) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
+			// We need to peek at the IP again
+			s := pw.Stats()
+			ip := s.iprepr
+
+			// Double check cache inside goroutine
+			d.cacheMu.RLock()
+			e, f := d.dnsCache[ip]
+			d.cacheMu.RUnlock()
+			if f && time.Now().Before(e.expiresAt) && s.GetHostRepr() != "" {
+				return
+			}
+
 			if updateHostDisplayName(pw) {
 				d.mu.Lock()
 				updated++
 				d.mu.Unlock()
+
+				// Update cache
+				newStats := pw.Stats()
+				d.cacheMu.Lock()
+				d.dnsCache[ip] = dnsCacheEntry{
+					name:      newStats.GetHostRepr(),
+					expiresAt: time.Now().Add(1 * time.Hour), // 1 hour TTL
+				}
+				d.cacheMu.Unlock()
+			} else {
+				// Cache negative result for a shorter time
+				d.cacheMu.Lock()
+				d.dnsCache[ip] = dnsCacheEntry{
+					name:      "",
+					expiresAt: time.Now().Add(5 * time.Minute), // 5 min TTL for failures
+				}
+				d.cacheMu.Unlock()
 			}
 		}(wrapper)
 	}

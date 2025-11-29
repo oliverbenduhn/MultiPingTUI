@@ -293,6 +293,11 @@ func (m *HostListModel) adjustScroll() {
 }
 
 func (m *HostListModel) getFilteredWrappers(wrappers []PingWrapperInterface, getCachedStats func(PingWrapperInterface) PWStats) []PingWrapperInterface {
+	// Return cached result if valid
+	if !m.cacheInvalidated && m.cachedWrappers != nil {
+		return m.cachedWrappers
+	}
+
 	var filtered []PingWrapperInterface
 
 	for _, wrapper := range wrappers {
@@ -440,6 +445,10 @@ func (m *HostListModel) getFilteredWrappers(wrappers []PingWrapperInterface, get
 			return filtered[i].Host() < filtered[j].Host()
 		})
 	}
+
+	// Update cache
+	m.cachedWrappers = filtered
+	m.cacheInvalidated = false
 
 	return filtered
 }

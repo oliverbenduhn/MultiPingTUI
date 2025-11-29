@@ -92,3 +92,7 @@ func (w *TCPPingWrapper) CalcStats(timeout_threshold int64) PWStats {
 func (w *TCPPingWrapper) Stats() *PWStats {
 	return w.stats
 }
+
+func (w *TCPPingWrapper) SetHostRepr(h string) {
+	w.stats.SetHostRepr(h)
+}

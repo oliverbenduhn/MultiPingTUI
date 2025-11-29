@@ -20,6 +20,18 @@ var Builder = "go version go1.xx.y os/platform"
 var DebugMode = false
 var SkipDNS = false
 
+// Options struct is replaced by Config in config.go, but we need to keep Options for compatibility 
+// with WrapperHolder.InitHosts signature if we don't change it.
+// However, I should update WrapperHolder to use Config or keep Options as an alias/adapter.
+// For now, let's adapt Config to Options or update WrapperHolder.
+// WrapperHolder.InitHosts takes Options. Let's update WrapperHolder to take Config.
+
+// But wait, I can't change WrapperHolder in this tool call.
+// I will define Options here as a type alias or just struct matching Config fields if needed, 
+// OR I will update WrapperHolder in the next step.
+// Actually, I can just update main to use Config, and create an Options struct that matches what WrapperHolder expects
+// populated from Config.
+// The original Options struct had pointers.
 type Options struct {
 	quiet               *bool
 	privileged          *bool
@@ -36,53 +48,34 @@ type Options struct {
 }
 
 func main() {
-	options := Options{}
-	options.privileged = flag.Bool("privileged", false, "switch to privileged mode (default if run as root or on windows; ineffective with '-s')")
-	options.size = flag.Int("size", 24, "pure-go ICMP packet size (without header's 28 Bytes (note: values to test common limits: 1472 or 8972))\nnot relevant for system's ping, refer to system's ping man page and ping-options option")
-	options.system = flag.Bool("s", false, "uses system's ping")
-	options.system_ping_options = flag.String("ping-options", "", "quoted options to provide to system's ping (ex: \"-Q 2\"), implies '-s', refer to system's ping man page")
-	options.quiet = flag.Bool("q", false, "quiet mode, disable live update")
-	options.log = flag.String("log", "", "transition log `filename`")
-	options.update = flag.Bool("update", false, "check and update to latest version (source github)")
-	options.tui = flag.Bool("tui", true, "use interactive TUI mode (default) (deprecated, use -notui)")
-	options.notui = flag.Bool("notui", false, "disable interactive TUI mode")
-	options.hostfile = flag.String("hostfile", "", "file with hosts (one per line, CIDR allowed)")
-	options.webPort = flag.Int("web-port", 8080, "port for web status server in TUI mode (0 to disable)")
-	options.pprofAddr = flag.String("pprof", "", "start pprof http server at this addr (e.g., localhost:6060); disabled by default")
-	once := flag.Bool("once", false, "ping once and exit")
-	onlyOnline := flag.Bool("only-online", false, "show only online hosts (initial filter)")
-	onlyOffline := flag.Bool("only-offline", false, "show only offline hosts (initial filter)")
-	debug := flag.Bool("debug", false, "enable debug output")
-	noDNS := flag.Bool("no-dns", false, "skip reverse DNS lookups (faster startup for large subnets)")
-	flag.Usage = usage
-	flag.Parse()
+	config := LoadConfig()
 
-	if *debug {
+	if config.Debug {
 		DebugMode = true
 	}
 
-	if *noDNS {
+	if config.NoDNS {
 		SkipDNS = true
 	}
 
-	if *options.notui {
-		*options.tui = false
+	if config.NoTui {
+		config.Tui = false
 	}
 
-	if *options.pprofAddr != "" {
-		go startPprof(*options.pprofAddr)
+	if config.PprofAddr != "" {
+		go startPprof(config.PprofAddr)
 	}
 
 	var rawHosts []string
-	if *options.hostfile != "" {
-		fileHosts, err := loadHostsFromFile(*options.hostfile)
+	if config.HostFile != "" {
+		fileHosts, err := loadHostsFromFile(config.HostFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error reading host file: %v\n", err)
 			os.Exit(1)
 		}
 		rawHosts = append(rawHosts, fileHosts...)
 	}
-	rawHosts = append(rawHosts, flag.Args()...)
+	rawHosts = append(rawHosts, config.Args...)
 	var hosts []string
 
 	for _, arg := range rawHosts {
@@ -103,25 +96,25 @@ func main() {
 		fmt.Fprintf(os.Stderr, "DEBUG: Total hosts to ping: %d\n", len(hosts))
 	}
 
-	if *options.update {
+	if config.Update {
 		selfUpdate()
 		return
 	}
 
-	if *once {
+	if config.Once {
 		if len(hosts) == 0 {
 			fmt.Println("no host provided")
 			return
 		}
-		RunPingOnce(hosts, *onlyOnline, *onlyOffline, *options.log)
+		RunPingOnce(hosts, config.OnlyOnline, config.OnlyOffline, config.Log)
 		return
 	}
 
-	if len(*options.system_ping_options) > 0 {
-		*options.system = true
+	if len(config.SystemPingOptions) > 0 {
+		config.System = true
 	}
 
-	if len(hosts) == 0 && !*options.tui {
+	if len(hosts) == 0 && !config.Tui {
 		fmt.Println("no host provided")
 		return
 	}
@@ -130,20 +123,37 @@ func main() {
 	quitFlag := false
 
 	transition_writer := &TransitionWriter{}
-	if *options.log != "" {
-		transition_writer.Init(*options.log, &quitFlag)
+	if config.Log != "" {
+		transition_writer.Init(config.Log, &quitFlag)
 		defer transition_writer.Close()
+	}
+
+	// Adapter for WrapperHolder which expects Options with pointers
+	// This is temporary until we refactor WrapperHolder to use Config
+	options := Options{
+		quiet:               &config.Quiet,
+		privileged:          &config.Privileged,
+		size:                &config.Size,
+		system:              &config.System,
+		log:                 &config.Log,
+		update:              &config.Update,
+		system_ping_options: &config.SystemPingOptions,
+		tui:                 &config.Tui,
+		notui:               &config.NoTui,
+		hostfile:            &config.HostFile,
+		webPort:             &config.WebPort,
+		pprofAddr:           &config.PprofAddr,
 	}
 
 	wh := &WrapperHolder{}
 	wh.InitHosts(hosts, options, transition_writer)
 
 	// TUI mode (default, interactive)
-	if *options.tui && !*options.quiet {
-		initialFilter := determineInitialFilter(*onlyOnline, *onlyOffline)
+	if config.Tui && !config.Quiet {
+		initialFilter := determineInitialFilter(config.OnlyOnline, config.OnlyOffline)
 		wh.Start()
 		wh.StartPeriodicDNSUpdates() // Start periodic DNS updates after wrappers are started
-		err := RunTUI(wh, transition_writer, initialFilter, *options.webPort)
+		err := RunTUI(wh, transition_writer, initialFilter, config.WebPort)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
 			os.Exit(1)
@@ -164,9 +174,9 @@ func main() {
 	wh.Start()
 	wh.StartPeriodicDNSUpdates() // Start periodic DNS updates after wrappers are started
 
-	if !*options.quiet {
+	if !config.Quiet {
 		display := NewDisplay(wh)
-		display.SetFilter(*onlyOnline, *onlyOffline)
+		display.SetFilter(config.OnlyOnline, config.OnlyOffline)
 		display.Start()
 
 		for !quitFlag {

@@ -37,20 +37,20 @@ type ServerView struct {
 type StatsProvider func(PingWrapperInterface) PWStats
 
 type StatusServer struct {
-	wh            *WrapperHolder
+	repo          HostRepository
 	srv           *http.Server
 	statsProvider StatsProvider
 	view          ServerView
 	viewMu        sync.RWMutex
 }
 
-func StartStatusServer(wh *WrapperHolder, provider StatsProvider, initialView ServerView, port int) (*StatusServer, error) {
+func StartStatusServer(repo HostRepository, provider StatsProvider, initialView ServerView, port int) (*StatusServer, error) {
 	if port <= 0 {
 		return nil, nil
 	}
 
 	server := &StatusServer{
-		wh:            wh,
+		repo:          repo,
 		statsProvider: provider,
 		view:          initialView,
 	}
@@ -473,7 +473,7 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *StatusServer) collectStatuses() []HostStatus {
-	wrappers := s.wh.Wrappers()
+	wrappers := s.repo.GetAll()
 	view := s.snapshotView()
 	filtered := s.filterAndSort(wrappers, view)
 	statuses := make([]HostStatus, 0, len(filtered))

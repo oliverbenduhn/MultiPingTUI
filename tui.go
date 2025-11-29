@@ -46,7 +46,8 @@ const (
 
 // TUIModel is the bubbletea model for the TUI
 type TUIModel struct {
-	wh             *WrapperHolder
+	ps             *PingService
+	repo           HostRepository
 	header         HeaderModel
 	footer         FooterModel
 	hostList       HostListModel
@@ -61,7 +62,7 @@ type TUIModel struct {
 	statusServer     *StatusServer      // optional web status server
 }
 
-func NewTUIModel(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode) *TUIModel {
+func NewTUIModel(ps *PingService, repo HostRepository, tw *TransitionWriter, initialFilter FilterMode) *TUIModel {
 	if initialFilter != FilterOnline && initialFilter != FilterOffline && initialFilter != FilterSmart {
 		initialFilter = FilterSmart
 	}
@@ -70,7 +71,8 @@ func NewTUIModel(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMo
 	hostList.filterMode = initialFilter
 
 	return &TUIModel{
-		wh:               wh,
+		ps:               ps,
+		repo:             repo,
 		header:           NewHeaderModel(),
 		footer:           NewFooterModel(),
 		hostList:         hostList,
@@ -240,7 +242,7 @@ func (m *TUIModel) getTickDuration() time.Duration {
 // This is called once per tick to avoid recalculating stats multiple times per frame
 func (m *TUIModel) updateStatsCache() {
 	m.statsCacheTime = time.Now()
-	for _, wrapper := range m.wh.Wrappers() {
+	for _, wrapper := range m.repo.GetAll() {
 		stats := wrapper.CalcStats(2 * 1e9)
 		m.statsCache[wrapper.Host()] = stats
 	}
@@ -263,7 +265,7 @@ func (m *TUIModel) getCachedStats(wrapper PingWrapperInterface) PWStats {
 func (m *TUIModel) applyHostInput() {
 	raw := strings.TrimSpace(m.hostInput)
 	hosts := parseHostsInput(raw)
-	m.wh.ReplaceHosts(hosts)
+	m.ps.ReplaceHosts(hosts)
 	m.hostList.cursor = -1
 	m.hostList.scrollOffset = 0
 	m.hostList.filterMode = FilterAll
@@ -345,7 +347,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case key.Matches(msg, keys.Quit):
 			m.quitting = true
-			m.wh.Stop()
+			m.ps.Stop()
 			return m, tea.Quit
 
 		case key.Matches(msg, keys.Escape):
@@ -361,7 +363,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case key.Matches(msg, keys.Up):
-			filtered := m.hostList.getFilteredWrappers(m.wh.Wrappers(), m.getCachedStats)
+			filtered := m.hostList.getFilteredWrappers(m.repo.GetAll(), m.getCachedStats)
 			if len(filtered) > 0 {
 				if m.hostList.cursor < 0 {
 					m.hostList.cursor = 0
@@ -373,7 +375,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case key.Matches(msg, keys.Down):
-			filtered := m.hostList.getFilteredWrappers(m.wh.Wrappers(), m.getCachedStats)
+			filtered := m.hostList.getFilteredWrappers(m.repo.GetAll(), m.getCachedStats)
 			if len(filtered) > 0 {
 				if m.hostList.cursor < 0 {
 					m.hostList.cursor = 0
@@ -385,7 +387,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case key.Matches(msg, keys.PageUp):
-			filtered := m.hostList.getFilteredWrappers(m.wh.Wrappers(), m.getCachedStats)
+			filtered := m.hostList.getFilteredWrappers(m.repo.GetAll(), m.getCachedStats)
 			if len(filtered) > 0 {
 				visibleLines := m.hostList.height - 7
 				if visibleLines < 1 {
@@ -404,7 +406,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case key.Matches(msg, keys.PageDown):
-			filtered := m.hostList.getFilteredWrappers(m.wh.Wrappers(), m.getCachedStats)
+			filtered := m.hostList.getFilteredWrappers(m.repo.GetAll(), m.getCachedStats)
 			if len(filtered) > 0 {
 				visibleLines := m.hostList.height - 7
 				if visibleLines < 1 {
@@ -446,7 +448,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, keys.HideHost):
 			if m.hostList.cursor >= 0 && !m.footer.showDetails {
-				filtered := m.hostList.getFilteredWrappers(m.wh.Wrappers(), m.getCachedStats)
+				filtered := m.hostList.getFilteredWrappers(m.repo.GetAll(), m.getCachedStats)
 				if m.hostList.cursor < len(filtered) {
 					hostToHide := filtered[m.hostList.cursor].Host()
 					m.hostList.hiddenHosts[hostToHide] = true
@@ -478,7 +480,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.editingHosts = true
 			m.statusMessage = "Edit hosts: one per line, Enter=apply, Esc=cancel, Ctrl+L=clear, Ctrl+N=new line."
 			var b strings.Builder
-			for i, w := range m.wh.Wrappers() {
+			for i, w := range m.repo.GetAll() {
 				if i > 0 {
 					b.WriteString("\n")
 				}
@@ -528,7 +530,7 @@ func (m *TUIModel) View() string {
 	}
 
 	// Get filtered and sorted wrappers
-	filtered := m.hostList.getFilteredWrappers(m.wh.Wrappers(), m.getCachedStats)
+	filtered := m.hostList.getFilteredWrappers(m.repo.GetAll(), m.getCachedStats)
 
 	if m.footer.showDetails && m.hostList.cursor >= 0 && m.hostList.cursor < len(filtered) {
 		// Show detail view
@@ -629,7 +631,7 @@ func (m *TUIModel) getRemainingTime() string {
 }
 
 // RunTUI starts the TUI interface with an initial filter mode applied
-func RunTUI(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode, webPort int) (finalErr error) {
+func RunTUI(ps *PingService, repo HostRepository, tw *TransitionWriter, initialFilter FilterMode, webPort int) (finalErr error) {
 	// Early panic protection before any terminal manipulation
 	defer func() {
 		if r := recover(); r != nil {
@@ -664,7 +666,7 @@ func RunTUI(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode, w
 			}
 			startDone <- true
 		}()
-		wh.Start()
+		ps.Start()
 	}()
 
 	// Wait for startup with timeout and interrupt support
@@ -677,14 +679,14 @@ func RunTUI(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode, w
 		return fmt.Errorf("error starting wrappers: %w", err)
 	case <-sigChan:
 		fmt.Fprintf(os.Stderr, "\nInterrupted during startup, cleaning up...\n")
-		wh.Stop()
+		ps.Stop()
 		return fmt.Errorf("interrupted by user")
 	case <-time.After(60 * time.Second):
-		wh.Stop()
+		ps.Stop()
 		return fmt.Errorf("timeout waiting for wrappers to start (60s)")
 	}
 
-	model := NewTUIModel(wh, tw, initialFilter)
+	model := NewTUIModel(ps, repo, tw, initialFilter)
 	var statusServer *StatusServer
 	if webPort > 0 {
 		initialView := ServerView{
@@ -694,7 +696,7 @@ func RunTUI(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode, w
 			Cols:   visibleColumnsList(model.hostList.visibleColumns),
 		}
 		var err error
-		statusServer, err = StartStatusServer(wh, model.getCachedStats, initialView, webPort)
+		statusServer, err = StartStatusServer(repo, model.getCachedStats, initialView, webPort)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to start status server on port %d: %v\n", webPort, err)
 		} else {
@@ -702,7 +704,7 @@ func RunTUI(wh *WrapperHolder, tw *TransitionWriter, initialFilter FilterMode, w
 		}
 	}
 
-	defer wh.Stop()
+	defer ps.Stop()
 	if statusServer != nil {
 		defer statusServer.Stop()
 	}

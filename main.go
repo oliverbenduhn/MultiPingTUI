@@ -8,7 +8,6 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"os/signal"
 	"strings"
 	"time"
 )
@@ -146,45 +145,21 @@ func main() {
 	}
 
 	wh := &WrapperHolder{}
-	wh.InitHosts(hosts, options, transition_writer)
+	// Initialize Repository and Service
+	repo := NewMemoryHostRepository()
+	ps := NewPingService(repo, options, transition_writer)
+	ps.InitHosts(hosts)
 
 	// TUI mode (default, interactive)
 	if config.Tui && !config.Quiet {
 		initialFilter := determineInitialFilter(config.OnlyOnline, config.OnlyOffline)
-		wh.Start()
-		wh.StartPeriodicDNSUpdates() // Start periodic DNS updates after wrappers are started
-		err := RunTUI(wh, transition_writer, initialFilter, config.WebPort)
+		ps.Start()
+		err := RunTUI(ps, repo, transition_writer, initialFilter, config.WebPort)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
+			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 			os.Exit(1)
 		}
 		return
-	}
-
-	// Legacy display mode
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-	go func() {
-		<-c
-		wh.Stop()
-		quitFlag = true
-		quitSig <- true
-	}()
-
-	wh.Start()
-	wh.StartPeriodicDNSUpdates() // Start periodic DNS updates after wrappers are started
-
-	if !config.Quiet {
-		display := NewDisplay(wh)
-		display.SetFilter(config.OnlyOnline, config.OnlyOffline)
-		display.Start()
-
-		for !quitFlag {
-			display.Update()
-			time.Sleep(100 * time.Millisecond)
-		}
-
-		display.Stop()
 	} else {
 		fmt.Print(VersionString())
 		for !quitFlag {

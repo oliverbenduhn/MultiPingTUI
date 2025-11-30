@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	tcpshaker "github.com/tevino/tcp-shaker"
@@ -23,6 +24,7 @@ type TCPPingWrapper struct {
 	stats         *PWStats
 	stopCheckLoop bool
 	loopTicker    *time.Ticker
+	mu            sync.RWMutex
 }
 
 func (w *TCPPingWrapper) Start() {
@@ -65,13 +67,17 @@ func (w *TCPPingWrapper) spawnChecker() {
 	}()
 	<-checker.WaitReady()
 	start := time.Now()
+	w.mu.Lock()
 	w.stats.lastsent = time.Now().UnixNano()
+	w.mu.Unlock()
 	err := checker.CheckAddr(w.str_tgt, time.Second)
 	if err == nil {
+		w.mu.Lock()
 		w.stats.has_ever_received = true
 		w.stats.lastrecv = time.Now().UnixNano()
 		w.stats.lastrtt = time.Since(start)
 		w.stats.lastrtt_as_string = round(w.stats.lastrtt, 2).String()
+		w.mu.Unlock()
 	}
 }
 
@@ -85,14 +91,21 @@ func (w *TCPPingWrapper) Host() string {
 }
 
 func (w *TCPPingWrapper) CalcStats(timeout_threshold int64) PWStats {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.stats.ComputeState(timeout_threshold)
 	return *w.stats
 }
 
 func (w *TCPPingWrapper) Stats() *PWStats {
-	return w.stats
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	s := *w.stats
+	return &s
 }
 
 func (w *TCPPingWrapper) SetHostRepr(h string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.stats.SetHostRepr(h)
 }

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/shlex"
@@ -22,6 +23,7 @@ type SystemPingWrapper struct {
 	stats        *PWStats
 	cmd          *exec.Cmd
 	ping_options string
+	mu           sync.RWMutex
 }
 
 var time_extractor = regexp.MustCompile(`time[=<]([\d\.]+) *(.?s)`)
@@ -78,11 +80,15 @@ func (w *SystemPingWrapper) Start() {
 			line := scanner.Text()
 			extracted := extractor.FindAllStringSubmatch(line, -1)
 			if len(extracted) > 0 {
+				w.mu.Lock()
 				w.stats.lastrecv = time.Now().UnixNano()
 				w.stats.lastrtt_as_string = extracted[0][1] + extracted[0][2]
+				w.mu.Unlock()
 			}
 		}
+		w.mu.Lock()
 		w.stats.error_message = fmt.Sprintf("%v exited code %v", w.cmd.String(), w.cmd.ProcessState.ExitCode())
+		w.mu.Unlock()
 	}()
 	w.cmd.Start()
 }
@@ -96,14 +102,21 @@ func (w *SystemPingWrapper) Host() string {
 }
 
 func (w *SystemPingWrapper) CalcStats(timeout_threshold int64) PWStats {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.stats.ComputeState(timeout_threshold)
 	return *w.stats
 }
 
 func (w *SystemPingWrapper) Stats() *PWStats {
-	return w.stats
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	s := *w.stats
+	return &s
 }
 
 func (w *SystemPingWrapper) SetHostRepr(h string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.stats.SetHostRepr(h)
 }

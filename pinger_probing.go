@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"sync"
 	"time"
 
 	probing "github.com/prometheus-community/pro-bing"
@@ -19,6 +20,7 @@ type ProbingWrapper struct {
 	size       int
 	stats      *PWStats
 	privileged bool
+	mu         sync.RWMutex
 }
 
 func (w *ProbingWrapper) Start() {
@@ -66,13 +68,14 @@ func (w *ProbingWrapper) Stop() {
 }
 
 func (w *ProbingWrapper) onSend(pkt *probing.Packet) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.stats.lastsent = time.Now().UnixNano()
 }
 
 func (w *ProbingWrapper) onRecv(pkt *probing.Packet) {
-	// p.lastread = fmt.Sprintf("%d bytes from %s (%s): icmp_seq=%d time=%v",
-	//	pkt.Nbytes, p.host, pkt.IPAddr, pkt.Seq, pkt.Rtt)
-	// fmt.Print(p.lastread)
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.stats.has_ever_received = true
 	w.stats.lastrecv = time.Now().UnixNano()
 	w.stats.lastrtt = pkt.Rtt
@@ -88,18 +91,30 @@ func (w *ProbingWrapper) Host() string {
 }
 
 func (w *ProbingWrapper) CalcStats(timeout_threshold int64) PWStats {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.stats.ComputeState(timeout_threshold)
 	return *w.stats
 }
 
 func (w *ProbingWrapper) Stats() *PWStats {
-	return w.stats
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	// Return a copy to avoid race conditions on the pointer
+	// But the interface expects *PWStats.
+	// If we return the internal pointer, the caller must not modify it and we can't guarantee read safety if we unlock.
+	// Ideally we should return a copy, but the signature is *PWStats.
+	// For now, let's return a copy on the heap.
+	s := *w.stats
+	return &s
 }
 
 var divs = []time.Duration{
 	time.Duration(1), time.Duration(10), time.Duration(100), time.Duration(1000)}
 
 func (w *ProbingWrapper) SetHostRepr(h string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.stats.SetHostRepr(h)
 }
 

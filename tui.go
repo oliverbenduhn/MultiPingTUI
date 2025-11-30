@@ -4,13 +4,15 @@ import (
 	"fmt"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
+
+	"os"
+	"os/signal"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"os"
-	"os/signal"
 )
 
 // FilterMode represents the current filter state
@@ -46,17 +48,18 @@ const (
 
 // TUIModel is the bubbletea model for the TUI
 type TUIModel struct {
-	ps             *PingService
-	repo           HostRepository
-	header         HeaderModel
-	footer         FooterModel
-	hostList       HostListModel
-	quitting       bool
+	ps               *PingService
+	repo             HostRepository
+	header           HeaderModel
+	footer           FooterModel
+	hostList         HostListModel
+	quitting         bool
 	transitionWriter *TransitionWriter
 	editingHosts     bool
 	hostInput        string
 	statusMessage    string
 	statsCache       map[string]PWStats // cache stats per wrapper to avoid recalculation
+	statsCacheMu     sync.RWMutex       // mutex for statsCache
 	statsCacheTime   time.Time          // when stats were last calculated
 	lastTickTime     time.Time          // when last tick happened
 	statusServer     *StatusServer      // optional web status server
@@ -206,7 +209,6 @@ var (
 			Foreground(lipgloss.Color("#4b5563"))
 )
 
-
 func (m *TUIModel) Init() tea.Cmd {
 	// Don't block in Init() - let first View() happen quickly
 	// Cache will be filled by first tick
@@ -241,6 +243,8 @@ func (m *TUIModel) getTickDuration() time.Duration {
 // updateStatsCache updates the cached stats for all wrappers
 // This is called once per tick to avoid recalculating stats multiple times per frame
 func (m *TUIModel) updateStatsCache() {
+	m.statsCacheMu.Lock()
+	defer m.statsCacheMu.Unlock()
 	m.statsCacheTime = time.Now()
 	for _, wrapper := range m.repo.GetAll() {
 		stats := wrapper.CalcStats(2 * 1e9)
@@ -250,6 +254,8 @@ func (m *TUIModel) updateStatsCache() {
 
 // getCachedStats returns cached stats for a wrapper
 func (m *TUIModel) getCachedStats(wrapper PingWrapperInterface) PWStats {
+	m.statsCacheMu.RLock()
+	defer m.statsCacheMu.RUnlock()
 	if stats, ok := m.statsCache[wrapper.Host()]; ok {
 		return stats
 	}
@@ -302,7 +308,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastTickTime = now
 			m.hostList.cacheInvalidated = true
 		}
-		
+
 		// Update countdown in header
 		m.header.countdown = m.getRemainingTime()
 

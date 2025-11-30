@@ -1,0 +1,101 @@
+DEBUG: Expanded 192.168.10.0/24 to 254 IPs
+DEBUG: Expanded 192.168.20.0/24 to 254 IPs
+DEBUG: Expanded 192.168.30.0/24 to 254 IPs
+DEBUG: Expanded 192.168.50.0/24 to 254 IPs
+DEBUG: Expanded 192.168.99.0/24 to 254 IPs
+DEBUG: Total hosts to ping: 1270
+DEBUG: Starting 1270 ping wrappers (parallel DNS lookups, staggered start)
+DEBUG: Starting wrapper 50/1270
+DEBUG: Starting wrapper 100/1270
+DEBUG: Starting wrapper 150/1270
+DEBUG: Starting wrapper 200/1270
+DEBUG: Starting wrapper 250/1270
+DEBUG: Starting wrapper 300/1270
+DEBUG: Starting wrapper 350/1270
+DEBUG: Starting wrapper 400/1270
+DEBUG: Starting wrapper 450/1270
+DEBUG: Starting wrapper 500/1270
+DEBUG: Starting wrapper 550/1270
+DEBUG: Starting wrapper 600/1270
+DEBUG: Starting wrapper 650/1270
+DEBUG: Starting wrapper 700/1270
+DEBUG: Starting wrapper 750/1270
+DEBUG: Starting wrapper 800/1270
+DEBUG: Starting wrapper 850/1270
+DEBUG: Starting wrapper 900/1270
+DEBUG: Starting wrapper 950/1270
+DEBUG: Starting wrapper 1000/1270
+DEBUG: Starting wrapper 1050/1270
+DEBUG: Starting wrapper 1100/1270
+DEBUG: Starting wrapper 1150/1270
+DEBUG: Starting wrapper 1200/1270
+DEBUG: Starting wrapper 1250/1270
+DEBUG: All 1270 wrappers started successfully
+DEBUG: Starting periodic DNS update goroutine (initial: 3s, interval: 60s)
+DEBUG: Starting wrapper initialization (this may take a moment for large subnets)...
+DEBUG: Starting 1270 ping wrappers (parallel DNS lookups, staggered start)
+DEBUG: Starting wrapper 50/1270
+DEBUG: Starting wrapper 100/1270
+DEBUG: Starting wrapper 150/1270
+DEBUG: Starting wrapper 200/1270
+DEBUG: Starting wrapper 250/1270
+DEBUG: Starting wrapper 300/1270
+DEBUG: Starting wrapper 350/1270
+DEBUG: Starting wrapper 400/1270
+DEBUG: Starting wrapper 450/1270
+DEBUG: Starting wrapper 500/1270
+DEBUG: Starting wrapper 550/1270
+DEBUG: Starting wrapper 600/1270
+DEBUG: Starting wrapper 650/1270
+DEBUG: Starting wrapper 700/1270
+DEBUG: Starting wrapper 750/1270
+DEBUG: Starting wrapper 800/1270
+DEBUG: Starting wrapper 850/1270
+DEBUG: Starting wrapper 900/1270
+DEBUG: Starting wrapper 950/1270
+DEBUG: Starting wrapper 1000/1270
+DEBUG: Starting wrapper 1050/1270
+DEBUG: Starting wrapper 1100/1270
+DEBUG: Starting wrapper 1150/1270
+DEBUG: Starting wrapper 1200/1270
+DEBUG: Starting wrapper 1250/1270
+DEBUG: All 1270 wrappers started successfully
+DEBUG: All wrappers started, launching TUI...
+Status server listening on http://[::]:8080 (/: live view, /json: JSON, /text: plain text)
+DEBUG DNS: 192.168.10.60 -> gaming-pc (current: 192.168.10.60)
+DEBUG DNS: 192.168.10.1 -> _gateway (current: 192.168.10.1)
+DEBUG DNS: 192.168.10.2 -> fritz.box.internal (current: 192.168.10.2)
+DEBUG DNS: 192.168.20.12 -> tasmota2.internal (current: 192.168.20.12)
+DEBUG DNS: 192.168.20.13 -> tasmota3.internal (current: 192.168.20.13)
+DEBUG DNS: 192.168.20.21 -> meross1.internal (current: 192.168.20.21)
+DEBUG DNS: 192.168.20.30 -> esp1.internal (current: 192.168.20.30)
+DEBUG DNS: 192.168.99.1 -> fw.internal (current: 192.168.99.1)
+DEBUG DNS: 192.168.10.80 -> pixel-7-pro.internal (current: 192.168.10.80)
+DEBUG DNS: 192.168.20.23 -> meross3.internal (current: 192.168.20.23)
+DEBUG DNS: 192.168.50.40 -> komodo.internal (current: 192.168.50.40)
+DEBUG DNS: 192.168.20.1 -> fw.internal (current: 192.168.20.1)
+DEBUG DNS: No PTR record for 192.168.99.102 (err: lookup 192.168.99.102: no such host)
+DEBUG DNS: 192.168.50.51 -> vaultwarden.internal (current: 192.168.50.51)
+DEBUG DNS: 192.168.30.1 -> fw.internal (current: 192.168.30.1)
+DEBUG DNS: 192.168.50.41 -> docker01.internal (current: 192.168.50.41)
+DEBUG DNS: 192.168.50.20 -> traefik.internal (current: 192.168.50.20)
+DEBUG DNS: 192.168.20.40 -> roborock.internal (current: 192.168.20.40)
+DEBUG DNS: No PTR record for 192.168.20.11 (err: lookup 192.168.20.11: no such host)
+DEBUG DNS: 192.168.50.21 -> homeassistant.internal (current: 192.168.50.21)
+DEBUG DNS: 192.168.20.22 -> meross2.internal (current: 192.168.20.22)
+DEBUG DNS: 192.168.99.2 -> netgear.internal (current: 192.168.99.2)
+DEBUG DNS: 192.168.20.14 -> tasmota4.internal (current: 192.168.20.14)
+DEBUG DNS: 192.168.50.90 -> ansible.internal (current: 192.168.50.90)
+DEBUG DNS: 192.168.20.16 -> tasmota6.internal (current: 192.168.20.16)
+DEBUG DNS: 192.168.50.42 -> docker02.internal (current: 192.168.50.42)
+DEBUG DNS: 192.168.99.12 -> pve2.internal (current: 192.168.99.12)
+DEBUG DNS: 192.168.99.3 -> ap-tlwa1201.internal (current: 192.168.99.3)
+DEBUG DNS: 192.168.99.11 -> pve.internal (current: 192.168.99.11)
+DEBUG DNS: 192.168.50.10 -> cloudflare.internal (current: 192.168.50.10)
+DEBUG DNS: 192.168.99.10 -> proxmox-datacenter-manager.internal (current: 192.168.99.10)
+DEBUG DNS: 192.168.99.21 -> pbs.internal (current: 192.168.99.21)
+DEBUG DNS: 192.168.99.13 -> pve3.internal (current: 192.168.99.13)
+DEBUG DNS: 192.168.50.1 -> fw.internal (current: 192.168.50.1)
+DEBUG DNS: 192.168.20.15 -> tasmota5.internal (current: 192.168.20.15)
+DEBUG: Updated DNS names for 33 online hosts
+DEBUG: Stopped periodic DNS update goroutine

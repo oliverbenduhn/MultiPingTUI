@@ -115,7 +115,7 @@ func updateHostDisplayName(wrapper PingWrapperInterface) bool {
 
 	// Only update if different from current representation
 	if newRepr != currentRepr {
-		stats.SetHostRepr(newRepr)
+		wrapper.SetHostRepr(newRepr)
 		return true
 	}
 

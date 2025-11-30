@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-var Version = "v1.0.6"
+var Version = "v1.0.7"
 var CommitHash = "dev"
 var BuildTimestamp = "1970-01-01T00:00:00"
 var Builder = "go version go1.xx.y os/platform"

@@ -1,4 +1,4 @@
-module github.com/babs/multiping
+module github.com/oliverbenduhn/MultiPingTUI
 
 go 1.24.0
 

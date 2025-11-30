@@ -13,6 +13,7 @@ type PingService struct {
 	options          Options
 	transitionWriter *TransitionWriter
 	dnsUpdater       *DNSUpdater
+	wrapperFactory   func(host string, options Options, tw *TransitionWriter) PingWrapperInterface
 }
 
 // NewPingService creates a new PingService
@@ -21,6 +22,7 @@ func NewPingService(repo HostRepository, options Options, tw *TransitionWriter) 
 		repo:             repo,
 		options:          options,
 		transitionWriter: tw,
+		wrapperFactory:   NewPingWrapper,
 	}
 	// Initialize DNSUpdater with a source function that gets wrappers from the repo
 	ps.dnsUpdater = NewDNSUpdater(repo.GetAll)
@@ -31,7 +33,7 @@ func NewPingService(repo HostRepository, options Options, tw *TransitionWriter) 
 func (s *PingService) InitHosts(hosts []string) {
 	wrappers := make([]PingWrapperInterface, len(hosts))
 	for i, host := range hosts {
-		wrappers[i] = NewPingWrapper(host, s.options, s.transitionWriter)
+		wrappers[i] = s.wrapperFactory(host, s.options, s.transitionWriter)
 	}
 	s.repo.UpdateAll(wrappers)
 }
@@ -100,7 +102,7 @@ func (s *PingService) ReplaceHosts(hosts []string) {
 	
 	newWrappers := make([]PingWrapperInterface, len(hosts))
 	for i, host := range hosts {
-		newWrappers[i] = NewPingWrapper(host, s.options, s.transitionWriter)
+		newWrappers[i] = s.wrapperFactory(host, s.options, s.transitionWriter)
 	}
 	
 	// Update repository

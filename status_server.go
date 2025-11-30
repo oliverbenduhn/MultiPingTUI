@@ -56,9 +56,9 @@ func StartStatusServer(repo HostRepository, provider StatsProvider, initialView 
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", server.textHandler)
+	mux.HandleFunc("/", server.htmlHandler)
+	mux.HandleFunc("/text", server.textHandler)
 	mux.HandleFunc("/json", server.jsonHandler)
-	mux.HandleFunc("/live", server.htmlHandler)
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
 	if err != nil {
@@ -70,10 +70,10 @@ func StartStatusServer(repo HostRepository, provider StatsProvider, initialView 
 		Handler:           mux,
 		ReadHeaderTimeout: 2 * time.Second,
 		// Very aggressive timeouts to prevent goroutine leaks
-		IdleTimeout:       5 * time.Second,
-		ReadTimeout:       3 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		MaxHeaderBytes:    1 << 20, // 1 MB
+		IdleTimeout:    5 * time.Second,
+		ReadTimeout:    3 * time.Second,
+		WriteTimeout:   10 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1 MB
 	}
 	// Disable keep-alives completely to prevent lingering connReader goroutines
 	server.srv.SetKeepAlivesEnabled(false)
@@ -85,7 +85,7 @@ func StartStatusServer(repo HostRepository, provider StatsProvider, initialView 
 		}
 	}()
 
-	fmt.Fprintf(os.Stderr, "Status server listening on http://%s (/: text, /json: JSON)\n", server.srv.Addr)
+	fmt.Fprintf(os.Stderr, "Status server listening on http://%s (/: live view, /json: JSON, /text: plain text)\n", server.srv.Addr)
 
 	return server, nil
 }

@@ -53,12 +53,13 @@ for DIST in $TARGETS; do
   TARGET=${BINBASE}-${GOOS}-${GOARCH}
   env CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="${LDFLAGS[*]}" -mod vendor -o dist/${TARGET}${SUFFIX}
   if [ "$GOOS" = "linux" ] && [ "$GOARCH" = "amd64" ]; then
-    echo "[-]    - build .deb"
-    PKG_STAGING="dist/deb-staging"
-    rm -rf "${PKG_STAGING}"
-    mkdir -p "${PKG_STAGING}/DEBIAN" "${PKG_STAGING}/usr/bin"
-    cp dist/${TARGET}${SUFFIX} "${PKG_STAGING}/usr/bin/${BINBASE}${SUFFIX}"
-    cat > "${PKG_STAGING}/DEBIAN/control" <<EOF
+    if command -v dpkg-deb >/dev/null 2>&1; then
+      echo "[-]    - build .deb"
+      PKG_STAGING="dist/deb-staging"
+      rm -rf "${PKG_STAGING}"
+      mkdir -p "${PKG_STAGING}/DEBIAN" "${PKG_STAGING}/usr/bin"
+      cp dist/${TARGET}${SUFFIX} "${PKG_STAGING}/usr/bin/${BINBASE}${SUFFIX}"
+      cat > "${PKG_STAGING}/DEBIAN/control" <<EOF
 Package: ${BINBASE}
 Version: ${PKG_VERSION}
 Section: net
@@ -67,15 +68,53 @@ Architecture: amd64
 Maintainer: ${MAINTAINER}
 Description: MultiPingTUI CLI (${BINBASE}) - multi-host ping/TCP probe TUI
 EOF
-    dpkg-deb --build "${PKG_STAGING}" "dist/${BINBASE}_${PKG_VERSION}_amd64.deb"
-    rm -rf "${PKG_STAGING}"
+      dpkg-deb --build "${PKG_STAGING}" "dist/${BINBASE}_${PKG_VERSION}_amd64.deb"
+      rm -rf "${PKG_STAGING}"
+    else
+      echo "[-]    - dpkg-deb not found, skipping .deb creation"
+    fi
+
+    if command -v makepkg >/dev/null 2>&1; then
+       echo "[-]    - build Arch package"
+       ARCH_STAGING="dist/arch-staging"
+       rm -rf "${ARCH_STAGING}"
+       mkdir -p "${ARCH_STAGING}"
+       cp dist/${TARGET}${SUFFIX} "${ARCH_STAGING}/${BINBASE}"
+       
+       # Create PKGBUILD
+       cat > "${ARCH_STAGING}/PKGBUILD" <<EOF
+pkgname=${BINBASE}
+pkgver=${PKG_VERSION}
+pkgrel=1
+pkgdesc="MultiPingTUI CLI - multi-host ping/TCP probe TUI"
+arch=('x86_64')
+url="https://github.com/${MAINTAINER}/MultiPingTUI"
+license=('MIT')
+depends=('glibc')
+source=("${BINBASE}")
+md5sums=('SKIP')
+
+package() {
+	install -Dm755 "\${srcdir}/${BINBASE}" "\${pkgdir}/usr/bin/${BINBASE}"
+}
+EOF
+       (cd "${ARCH_STAGING}" && makepkg -f)
+       mv "${ARCH_STAGING}"/*.pkg.tar.zst dist/
+       rm -rf "${ARCH_STAGING}"
+    else
+       echo "[-]    - makepkg not found, skipping Arch package creation"
+    fi
   fi
   (cd dist; sha256sum ${TARGET}${SUFFIX}) | tee -a ${BINBASE}.sha256sum
   if [ -z "$NOCOMPRESS" ]; then
     echo "[-]    - compress"
     if [ "$GOOS" = "windows" ]; then
       xz --keep dist/${TARGET}${SUFFIX}
-      (cd dist; zip -qm9 ${TARGET}.zip ${TARGET}${SUFFIX})
+      if command -v zip >/dev/null 2>&1; then
+        (cd dist; zip -qm9 ${TARGET}.zip ${TARGET}${SUFFIX})
+      else
+        echo "[-]    - zip not found, skipping zip creation"
+      fi
     else
       xz dist/${TARGET}
     fi

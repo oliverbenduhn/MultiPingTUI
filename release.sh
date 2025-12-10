@@ -74,15 +74,14 @@ EOF
       echo "[-]    - dpkg-deb not found, skipping .deb creation"
     fi
 
-    if command -v makepkg >/dev/null 2>&1; then
-       echo "[-]    - build Arch package"
-       ARCH_STAGING="dist/arch-staging"
-       rm -rf "${ARCH_STAGING}"
-       mkdir -p "${ARCH_STAGING}"
-       cp dist/${TARGET}${SUFFIX} "${ARCH_STAGING}/${BINBASE}"
-       
-       # Create PKGBUILD
-       cat > "${ARCH_STAGING}/PKGBUILD" <<EOF
+    echo "[-]    - stage Arch package"
+    ARCH_STAGING="dist/arch"
+    rm -rf "${ARCH_STAGING}"
+    mkdir -p "${ARCH_STAGING}"
+    cp dist/${TARGET}${SUFFIX} "${ARCH_STAGING}/${BINBASE}"
+
+    # Create PKGBUILD
+    cat > "${ARCH_STAGING}/PKGBUILD" <<EOF
 pkgname=${BINBASE}
 pkgver=${PKG_VERSION}
 pkgrel=1
@@ -98,11 +97,13 @@ package() {
 	install -Dm755 "\${srcdir}/${BINBASE}" "\${pkgdir}/usr/bin/${BINBASE}"
 }
 EOF
+    if command -v makepkg >/dev/null 2>&1; then
+       echo "[-]    - build Arch package"
        (cd "${ARCH_STAGING}" && makepkg -f)
        mv "${ARCH_STAGING}"/*.pkg.tar.zst dist/
        rm -rf "${ARCH_STAGING}"
     else
-       echo "[-]    - makepkg not found, skipping Arch package creation"
+       echo "[-]    - makepkg not found, Arch PKGBUILD staged in dist/arch for manual build"
     fi
   fi
   (cd dist; sha256sum ${TARGET}${SUFFIX}) | tee -a ${BINBASE}.sha256sum
@@ -127,5 +128,32 @@ mv ${BINBASE}.sha256sum dist/
 
 #echo "[*] pack"
 #tar -cvf all.tar -C dist/ . && mv all.tar dist
+
+if [ -z "$SKIP_GH_UPLOAD" ]; then
+  if command -v gh >/dev/null 2>&1; then
+    echo "[*] GitHub upload"
+    REMOTE_URL=$(git config --get remote.origin.url 2>/dev/null || echo "")
+    if [[ -z "$GH_REPO" && "$REMOTE_URL" =~ github.com[:/]+([^/]+/[^/.]+) ]]; then
+      GH_REPO="${BASH_REMATCH[1]}"
+    fi
+    GH_REPO=${GH_REPO:-"oliverbenduhn/MultiPingTUI"}
+    echo "[-]    - target repo: ${GH_REPO}"
+
+    mapfile -t DIST_FILES < <(find dist -maxdepth 1 -type f | sort)
+    if [ ${#DIST_FILES[@]} -eq 0 ]; then
+      echo "[-]    - no dist files found, skipping upload"
+    else
+      if gh release view "${VERSION}" --repo "${GH_REPO}" >/dev/null 2>&1; then
+        echo "[-]    - release ${VERSION} exists, uploading assets"
+        gh release upload "${VERSION}" "${DIST_FILES[@]}" --clobber --repo "${GH_REPO}"
+      else
+        echo "[-]    - create release ${VERSION} and upload assets"
+        gh release create "${VERSION}" "${DIST_FILES[@]}" --title "${VERSION}" --notes "Automated release for ${VERSION}" --repo "${GH_REPO}"
+      fi
+    fi
+  else
+    echo "[!] gh not found, skipping GitHub upload (set SKIP_GH_UPLOAD=1 to silence)"
+  fi
+fi
 
 echo "[*] done"

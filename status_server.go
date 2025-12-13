@@ -28,10 +28,16 @@ type HostStatus struct {
 }
 
 type ServerView struct {
-	Filter FilterMode
-	Sort   SortMode
-	Hidden map[string]bool
-	Cols   []int
+	Filter FilterMode      `json:"filter"`
+	Sort   SortMode        `json:"sort"`
+	Hidden map[string]bool `json:"hidden"`
+	Cols   []int           `json:"cols"`
+}
+
+type ViewState struct {
+	View     ServerView   `json:"view"`
+	Statuses []HostStatus `json:"statuses"`
+	Updated  time.Time    `json:"updated"`
 }
 
 type StatsProvider func(PingWrapperInterface) PWStats
@@ -59,6 +65,8 @@ func StartStatusServer(repo HostRepository, provider StatsProvider, initialView 
 	mux.HandleFunc("/", server.htmlHandler)
 	mux.HandleFunc("/text", server.textHandler)
 	mux.HandleFunc("/json", server.jsonHandler)
+	mux.HandleFunc("/view", server.viewHandler)
+	mux.HandleFunc("/state", server.stateHandler)
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
 	if err != nil {
@@ -106,6 +114,74 @@ func (s *StatusServer) jsonHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Connection", "close")
 	if err := json.NewEncoder(w).Encode(statuses); err != nil {
 		http.Error(w, "failed to encode status", http.StatusInternalServerError)
+	}
+}
+
+func (s *StatusServer) stateHandler(w http.ResponseWriter, _ *http.Request) {
+	state := ViewState{
+		View:     s.snapshotView(),
+		Statuses: s.collectStatuses(),
+		Updated:  time.Now(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Connection", "close")
+	if err := json.NewEncoder(w).Encode(state); err != nil {
+		http.Error(w, "failed to encode state", http.StatusInternalServerError)
+	}
+}
+
+type viewPatch struct {
+	Filter *FilterMode     `json:"filter,omitempty"`
+	Sort   *SortMode       `json:"sort,omitempty"`
+	Cols   []int           `json:"cols,omitempty"`
+	Hidden map[string]bool `json:"hidden,omitempty"`
+}
+
+func (s *StatusServer) viewHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		view := s.snapshotView()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Connection", "close")
+		if err := json.NewEncoder(w).Encode(view); err != nil {
+			http.Error(w, "failed to encode view", http.StatusInternalServerError)
+		}
+		return
+	case http.MethodPost:
+		defer r.Body.Close()
+		var patch viewPatch
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+
+		s.viewMu.Lock()
+		if patch.Filter != nil && validFilterMode(*patch.Filter) {
+			s.view.Filter = *patch.Filter
+		}
+		if patch.Sort != nil && validSortMode(*patch.Sort) {
+			s.view.Sort = *patch.Sort
+		}
+		if patch.Hidden != nil {
+			s.view.Hidden = patch.Hidden
+		}
+		if patch.Cols != nil {
+			s.view.Cols = normalizeColumns(patch.Cols)
+		}
+		s.viewMu.Unlock()
+
+		view := s.snapshotView()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Connection", "close")
+		_ = json.NewEncoder(w).Encode(view)
+		return
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
 }
 
@@ -162,6 +238,57 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       font-weight: 600;
       margin-bottom: 8px;
       color: var(--text-primary);
+    }
+    .controls {
+      margin-top: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 18px;
+      align-items: center;
+    }
+    .control-group {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      background: rgba(240, 246, 252, 0.03);
+      border: 1px solid rgba(240, 246, 252, 0.07);
+      padding: 10px 12px;
+      border-radius: 8px;
+    }
+    .control-group label {
+      font-size: 12px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 600;
+    }
+    .control-group select {
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      border: 1px solid rgba(240, 246, 252, 0.12);
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 13px;
+      outline: none;
+    }
+    .cols {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .cols .col-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--text-primary);
+      user-select: none;
+    }
+    .cols input[type="checkbox"] {
+      width: 14px;
+      height: 14px;
+      accent-color: var(--blue);
     }
     .muted {
       color: var(--text-muted);
@@ -296,6 +423,17 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       align-items: center;
       gap: 8px;
     }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(88, 166, 255, 0.12);
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 600;
+    }
     .status-indicator {
       width: 8px;
       height: 8px;
@@ -352,13 +490,30 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
 <body>
   <header>
     <h1>🌐 MultiPingTUI Live Status</h1>
-    <p class="muted">Auto-refreshes every second · <code>/json</code> for JSON · <code>/</code> for text</p>
+    <p class="muted">Auto-refreshes every second · <code>/state</code> includes view+data · <code>/json</code> data only · <code>/text</code> plain text</p>
+    <div class="controls">
+      <div class="control-group">
+        <label for="sort">Sort</label>
+        <select id="sort">
+          <option value="0">Name</option>
+          <option value="1">Status</option>
+          <option value="2">RTT</option>
+          <option value="3">Last Seen</option>
+          <option value="4">IP</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label>Columns</label>
+        <div class="cols" id="cols"></div>
+      </div>
+      <span class="pill" id="sync-pill">synced</span>
+    </div>
   </header>
 
   <div class="container">
     <table id="status">
       <thead>
-        <tr>%s</tr>
+        <tr></tr>
       </thead>
       <tbody></tbody>
     </table>
@@ -370,12 +525,47 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
   </div>
 
   <script>
-    const columns = %s;
+    const initialColumns = %s;
     const columnNames = {1:'Status', 2:'Name', 3:'IP Address', 4:'RTT', 5:'Last Reply', 6:'Last Loss'};
     const tbody = document.querySelector('#status tbody');
-    document.querySelector('#status thead tr').innerHTML = columns.map(c => '<th>' + columnNames[c] + '</th>').join('');
+    const theadRow = document.querySelector('#status thead tr');
     const updatedEl = document.querySelector('#updated span:last-child');
+    const syncPill = document.querySelector('#sync-pill');
+    const sortEl = document.querySelector('#sort');
+    const colsEl = document.querySelector('#cols');
     const REFRESH_MS = 1000;
+
+    function normalizeCols(cols) {
+      if (!Array.isArray(cols) || cols.length === 0) return [1,2,3,4,5,6];
+      const set = new Set(cols.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n >= 1 && n <= 6));
+      return Array.from(set).sort((a,b) => a-b);
+    }
+
+    function renderControls(view) {
+      if (typeof view.sort === 'number') {
+        sortEl.value = String(view.sort);
+      }
+
+      const cols = normalizeCols(view.cols);
+      colsEl.innerHTML = '';
+      for (let i = 1; i <= 6; i++) {
+        const label = document.createElement('label');
+        label.className = 'col-toggle';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = cols.includes(i);
+        cb.dataset.col = String(i);
+        label.appendChild(cb);
+        const span = document.createElement('span');
+        span.textContent = columnNames[i];
+        label.appendChild(span);
+        colsEl.appendChild(label);
+      }
+    }
+
+    function renderHeader(cols) {
+      theadRow.innerHTML = cols.map(c => '<th>' + columnNames[c] + '</th>').join('');
+    }
 
     function parseRTT(rttStr) {
       if (!rttStr || rttStr === '-') return null;
@@ -414,10 +604,33 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       updatedEl.textContent = text + ' · ' + now.toLocaleTimeString();
     }
 
+    async function updateView(patch) {
+      await fetch('/view', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(patch),
+        cache: 'no-store'
+      });
+    }
+
+    function currentSelectedCols() {
+      const cols = [];
+      colsEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+        if (cb.checked) cols.push(Number(cb.dataset.col));
+      });
+      return normalizeCols(cols);
+    }
+
     async function refresh() {
       try {
-        const res = await fetch('/json', {cache:'no-store', headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}});
-        const data = await res.json();
+        const res = await fetch('/state', {cache:'no-store', headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}});
+        const state = await res.json();
+        const view = state.view || {};
+        const columns = normalizeCols(view.cols || initialColumns);
+        renderHeader(columns);
+        renderControls(view);
+
+        const data = state.statuses || [];
         tbody.innerHTML = '';
 
         for (const row of data) {
@@ -458,18 +671,35 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
           });
           tbody.appendChild(tr);
         }
+        syncPill.textContent = 'synced';
         renderUpdated('Connected');
       } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="' + columns.length + '" style="color: var(--red); text-align: center; padding: 24px;">⚠ Error loading data</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" style="color: var(--red); text-align: center; padding: 24px;">⚠ Error loading data</td></tr>';
+        syncPill.textContent = 'offline';
         renderUpdated('Disconnected');
       }
     }
+
+    sortEl.addEventListener('change', async () => {
+      const sort = Number(sortEl.value);
+      syncPill.textContent = 'updating…';
+      await updateView({sort});
+      await refresh();
+    });
+
+    colsEl.addEventListener('change', async (e) => {
+      if (!e.target || e.target.type !== 'checkbox') return;
+      const cols = currentSelectedCols();
+      syncPill.textContent = 'updating…';
+      await updateView({cols});
+      await refresh();
+    });
 
     refresh();
     setInterval(refresh, REFRESH_MS);
   </script>
 </body>
-</html>`, s.renderHTMLHeader(cols), marshalColumns(cols))
+</html>`, marshalColumns(cols))
 }
 
 func (s *StatusServer) collectStatuses() []HostStatus {
@@ -521,9 +751,14 @@ func (s *StatusServer) collectStatuses() []HostStatus {
 }
 
 func (s *StatusServer) UpdateView(view ServerView) {
+	view.Cols = normalizeColumns(view.Cols)
 	s.viewMu.Lock()
 	defer s.viewMu.Unlock()
 	s.view = view
+}
+
+func (s *StatusServer) View() ServerView {
+	return s.snapshotView()
 }
 
 func (s *StatusServer) snapshotView() ServerView {
@@ -542,13 +777,11 @@ func (s *StatusServer) snapshotView() ServerView {
 }
 
 func (s *StatusServer) columnsFromView() []int {
-	cols := s.snapshotView().Cols
+	cols := normalizeColumns(s.snapshotView().Cols)
 	if len(cols) == 0 {
 		return []int{1, 2, 3, 4, 5, 6}
 	}
-	out := append([]int{}, cols...)
-	sort.Ints(out)
-	return out
+	return append([]int{}, cols...)
 }
 
 func (s *StatusServer) renderColumns(st HostStatus, columns []int) string {
@@ -582,6 +815,41 @@ func (s *StatusServer) renderColumns(st HostStatus, columns []int) string {
 		}
 	}
 	return strings.Join(parts, " | ")
+}
+
+func normalizeColumns(cols []int) []int {
+	if len(cols) == 0 {
+		return []int{}
+	}
+	seen := make(map[int]bool, 6)
+	out := make([]int, 0, 6)
+	for _, c := range cols {
+		if c < 1 || c > 6 || seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	sort.Ints(out)
+	return out
+}
+
+func validFilterMode(m FilterMode) bool {
+	switch m {
+	case FilterAll, FilterSmart, FilterOnline, FilterOffline:
+		return true
+	default:
+		return false
+	}
+}
+
+func validSortMode(m SortMode) bool {
+	switch m {
+	case SortByName, SortByStatus, SortByRTT, SortByLastSeen, SortByIP:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *StatusServer) renderHTMLHeader(columns []int) string {

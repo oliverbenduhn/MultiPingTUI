@@ -287,6 +287,9 @@ func (m *TUIModel) applyHostInput() {
 }
 
 func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Keep TUI view synchronized with the web live view (when enabled).
+	m.syncViewFromStatusServer()
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.header.width = msg.Width
@@ -513,6 +516,77 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m *TUIModel) syncViewFromStatusServer() {
+	if m.statusServer == nil {
+		return
+	}
+
+	view := m.statusServer.View()
+	changed := false
+
+	if view.Filter != m.hostList.filterMode {
+		m.hostList.filterMode = view.Filter
+		m.header.filterMode = view.Filter
+		m.hostList.cursor = -1
+		m.hostList.scrollOffset = 0
+		m.hostList.cacheInvalidated = true
+		changed = true
+	}
+
+	if view.Sort != m.hostList.sortMode {
+		m.hostList.sortMode = view.Sort
+		m.header.sortMode = view.Sort
+		m.hostList.cacheInvalidated = true
+		changed = true
+	}
+
+	if view.Hidden != nil {
+		if !sameHiddenHosts(m.hostList.hiddenHosts, view.Hidden) {
+			m.hostList.hiddenHosts = cloneHiddenHosts(view.Hidden)
+			m.hostList.cacheInvalidated = true
+			changed = true
+		}
+	}
+
+	if view.Cols == nil || len(view.Cols) == 0 {
+		for i := 1; i <= 6; i++ {
+			if !m.hostList.visibleColumns[i] {
+				changed = true
+			}
+			m.hostList.visibleColumns[i] = true
+		}
+	} else {
+		want := make(map[int]bool, 6)
+		for _, c := range view.Cols {
+			if c >= 1 && c <= 6 {
+				want[c] = true
+			}
+		}
+		for i := 1; i <= 6; i++ {
+			if m.hostList.visibleColumns[i] != want[i] {
+				changed = true
+			}
+			m.hostList.visibleColumns[i] = want[i]
+		}
+	}
+
+	if changed {
+		m.hostList.cacheInvalidated = true
+	}
+}
+
+func sameHiddenHosts(a, b map[string]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *TUIModel) View() string {

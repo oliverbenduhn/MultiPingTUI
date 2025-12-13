@@ -60,6 +60,8 @@ See `mping -h` for detailed information.
 **TUI Mode (Default)**
 Interactive terminal UI with keyboard navigation, filtering, and detailed host views. This is the default mode and provides the best user experience.
 
+If a hostname cannot be resolved (DNS `no such host`, temporary DNS failure, etc.), `mping` still starts and shows the error per host.
+
 **Legacy Display Mode** (`-notui`)
 Simple non-interactive display mode compatible with the original multiping. Updates every 100ms.
 

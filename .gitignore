@@ -3,6 +3,9 @@ dist
 _misc
 .tools/
 .cache/
+.gocache/
+.gomodcache/
+mping_new
 multiping
 multiping.exe
 multipingtui

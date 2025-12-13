@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -49,13 +48,19 @@ func (w *SystemPingWrapper) Start() {
 		var err error
 		path, err = exec.LookPath("ping")
 		if err != nil {
-			log.Fatal(err)
+			w.mu.Lock()
+			w.stats.error_message = err.Error()
+			w.mu.Unlock()
+			return
 		}
 	}
 
 	args, err := shlex.Split(w.ping_options)
 	if err != nil {
-		log.Fatal(err)
+		w.mu.Lock()
+		w.stats.error_message = err.Error()
+		w.mu.Unlock()
+		return
 	}
 
 	extractor := time_extractor
@@ -68,10 +73,6 @@ func (w *SystemPingWrapper) Start() {
 
 	w.cmd = exec.Command(path, args...)
 	w.cmd.Env = append(w.cmd.Environ(), "LANG=C")
-
-	w.stats = &PWStats{
-		state: true,
-	}
 	r, _ := w.cmd.StdoutPipe()
 	scanner := bufio.NewScanner(r)
 	go func() {
@@ -90,7 +91,12 @@ func (w *SystemPingWrapper) Start() {
 		w.stats.error_message = fmt.Sprintf("%v exited code %v", w.cmd.String(), w.cmd.ProcessState.ExitCode())
 		w.mu.Unlock()
 	}()
-	w.cmd.Start()
+	if err := w.cmd.Start(); err != nil {
+		w.mu.Lock()
+		w.stats.error_message = err.Error()
+		w.mu.Unlock()
+		return
+	}
 }
 
 func (w *SystemPingWrapper) Stop() {

@@ -412,7 +412,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		applyUserSettingsToModel(m, settings)
 
 		// Update hosts if they changed.
-		if len(settings.Hosts) > 0 && !sameStringSlice(settings.Hosts, m.hostsRaw) {
+		if !sameStringSlice(settings.Hosts, m.hostsRaw) {
 			m.hostsRaw = append([]string{}, settings.Hosts...)
 			hosts := parseHostsInput(strings.Join(settings.Hosts, "\n"))
 			m.ps.ReplaceHosts(hosts)
@@ -803,7 +803,7 @@ func (m *TUIModel) syncViewFromStatusServer() {
 		}
 	}
 
-	if view.Cols == nil || len(view.Cols) == 0 {
+	if len(view.Cols) == 0 {
 		for i := 1; i <= 6; i++ {
 			if !m.hostList.visibleColumns[i] {
 				changed = true
@@ -1360,6 +1360,14 @@ func RunTUI(ps *PingService, repo HostRepository, tw *TransitionWriter, initialF
 }
 
 func applyUserSettingsToModel(m *TUIModel, settings UserSettings) {
+	if validFilterMode(settings.View.Filter) {
+		if m.hostList.filterMode != settings.View.Filter {
+			m.hostList.filterMode = settings.View.Filter
+			m.header.filterMode = settings.View.Filter
+			m.hostList.cursor = -1
+			m.hostList.scrollOffset = 0
+		}
+	}
 	if validSortMode(settings.View.Sort) {
 		m.hostList.sortMode = settings.View.Sort
 		m.header.sortMode = settings.View.Sort
@@ -1367,22 +1375,26 @@ func applyUserSettingsToModel(m *TUIModel, settings UserSettings) {
 	if validUpdateRate(settings.View.Rate) {
 		m.header.updateRate = settings.View.Rate
 	}
-	if settings.View.Hidden != nil {
+
+	// Hidden: nil means "no hidden hosts".
+	if settings.View.Hidden == nil {
+		m.hostList.hiddenHosts = make(map[string]bool)
+	} else {
 		m.hostList.hiddenHosts = cloneHiddenHosts(settings.View.Hidden)
 	}
-	if settings.View.Cols != nil {
+
+	// Cols: nil/empty means "all visible".
+	for i := 1; i <= 6; i++ {
+		m.hostList.visibleColumns[i] = false
+	}
+	if len(settings.View.Cols) == 0 {
 		for i := 1; i <= 6; i++ {
-			m.hostList.visibleColumns[i] = false
+			m.hostList.visibleColumns[i] = true
 		}
+	} else {
 		for _, c := range settings.View.Cols {
 			if c >= 1 && c <= 6 {
 				m.hostList.visibleColumns[c] = true
-			}
-		}
-		// If cols empty, treat as "all visible"
-		if len(settings.View.Cols) == 0 {
-			for i := 1; i <= 6; i++ {
-				m.hostList.visibleColumns[i] = true
 			}
 		}
 	}
@@ -1394,10 +1406,8 @@ func userSettingsFromModel(m *TUIModel) UserSettings {
 	if len(m.hostsRaw) > 0 {
 		out.Hosts = append([]string{}, m.hostsRaw...)
 	} else {
-		// fallback (may be expanded)
-		for _, w := range m.repo.GetAll() {
-			out.Hosts = append(out.Hosts, w.Host())
-		}
+		// No reliable raw host list available; keep empty instead of serializing display strings.
+		out.Hosts = []string{}
 	}
 	out.View = UserViewSettings{
 		Filter: m.hostList.filterMode,

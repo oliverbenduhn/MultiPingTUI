@@ -61,9 +61,17 @@ func main() {
 		config.Tui = false
 	}
 
+	// If mping is started without any hosts and there is no config yet, create a commented default.
+	if config.Tui && config.HostFile == "" && len(config.Args) == 0 {
+		if path, err := userSettingsPath(); err == nil {
+			_ = ensureConfigFile(path)
+		}
+	}
+
 	userSettings, settingsErr := LoadUserSettings()
-	if settingsErr != nil && DebugMode {
-		fmt.Fprintf(os.Stderr, "DEBUG: failed to load user settings: %v\n", settingsErr)
+	if settingsErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: invalid config, ignoring (%v)\n", settingsErr)
+		userSettings = DefaultUserSettings()
 	}
 
 	if config.EditConfig {
@@ -84,6 +92,7 @@ func main() {
 	}
 
 	var rawHosts []string
+	explicitHosts := false
 	if config.HostFile != "" {
 		fileHosts, err := loadHostsFromFile(config.HostFile)
 		if err != nil {
@@ -91,12 +100,25 @@ func main() {
 			os.Exit(1)
 		}
 		rawHosts = append(rawHosts, fileHosts...)
+		explicitHosts = true
+	}
+	if len(config.Args) > 0 {
+		explicitHosts = true
 	}
 	rawHosts = append(rawHosts, config.Args...)
 
 	// If no hosts were provided, fall back to persisted settings (TUI mode).
 	if len(rawHosts) == 0 && config.Tui {
 		rawHosts = append([]string{}, userSettings.Hosts...)
+	}
+
+	// Persist explicit host arguments into config for next run.
+	if explicitHosts {
+		if path, err := userSettingsPath(); err == nil {
+			_ = ensureConfigFile(path)
+			userSettings.Hosts = append([]string{}, rawHosts...)
+			_ = SaveUserSettings(userSettings)
+		}
 	}
 	var hosts []string
 

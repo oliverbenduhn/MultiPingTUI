@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"runtime"
@@ -27,7 +26,10 @@ func (w *ProbingWrapper) Start() {
 	var err error
 	w.pinger, err = probing.NewPinger(w.ip.String())
 	if err != nil {
-		log.Fatalf("pinger initialization failed %s, %s", w.host, err)
+		w.mu.Lock()
+		w.stats.error_message = fmt.Sprintf("pinger init failed: %v", err)
+		w.mu.Unlock()
+		return
 	}
 
 	w.pinger.RecordRtts = false
@@ -58,7 +60,10 @@ func (w *ProbingWrapper) Start() {
 	go func(w *ProbingWrapper) {
 		err := w.pinger.Run()
 		if err != nil {
-			log.Fatalf("%s", err)
+			w.mu.Lock()
+			w.stats.error_message = fmt.Sprintf("pinger stopped: %v", err)
+			w.mu.Unlock()
+			return
 		}
 	}(w)
 }

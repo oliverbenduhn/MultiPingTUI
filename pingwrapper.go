@@ -1,7 +1,6 @@
 package main
 
 import (
-	"log"
 	"net"
 	"regexp"
 	"strconv"
@@ -38,34 +37,47 @@ func NewPingWrapper(host string, options Options, transition_writer *TransitionW
 	if found_proto == "tcp" {
 
 		if found_port == "" {
-			log.Fatalf("%v: tcp probing requested but no port given\n", host)
+			return NewErrorWrapper(host, "tcp probing requested but no port given", transition_writer)
 		}
 		port, err := strconv.Atoi(found_port)
 		if err != nil {
-			log.Fatalf("%v: %v\n", host, err)
+			return NewErrorWrapper(host, err.Error(), transition_writer)
 		}
 		if port <= 0 || port > 65535 {
-			log.Fatalf("%v: tcp probing port invalid: %v\n", host, port)
+			return NewErrorWrapper(host, "tcp probing port invalid", transition_writer)
 		}
 		found_port_int = port
 
+		ip, err := resolveIPAddr(found_host, found_ip_family)
+		if err != nil {
+			return NewErrorWrapper(host, err.Error(), transition_writer)
+		}
+
 		return &TCPPingWrapper{
 			host:  found_host,
-			ip:    mustResolve(found_host, found_ip_family),
+			ip:    ip,
 			port:  found_port_int,
 			stats: &PWStats{transition_writer: transition_writer},
 		}
 	} else if *options.system {
+		ip, err := resolveIPAddr(found_host, found_ip_family)
+		if err != nil {
+			return NewErrorWrapper(host, err.Error(), transition_writer)
+		}
 		return &SystemPingWrapper{
 			host:         host,
-			ip:           mustResolve(found_host, found_ip_family),
+			ip:           ip,
 			stats:        &PWStats{transition_writer: transition_writer},
 			ping_options: *options.system_ping_options,
 		}
 	} else {
+		ip, err := resolveIPAddr(found_host, found_ip_family)
+		if err != nil {
+			return NewErrorWrapper(host, err.Error(), transition_writer)
+		}
 		return &ProbingWrapper{
 			host:       host,
-			ip:         mustResolve(found_host, found_ip_family),
+			ip:         ip,
 			privileged: *options.privileged,
 			size:       *options.size,
 			stats:      &PWStats{transition_writer: transition_writer},
@@ -73,11 +85,11 @@ func NewPingWrapper(host string, options Options, transition_writer *TransitionW
 	}
 }
 
-func mustResolve(host string, ip_family string) *net.IPAddr {
+func resolveIPAddr(host string, ip_family string) (*net.IPAddr, error) {
 	host = strings.Trim(host, "[]")
 	ipaddr, err := net.ResolveIPAddr("ip"+ip_family, host)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
-	return ipaddr
+	return ipaddr, nil
 }

@@ -25,6 +25,53 @@ type UserViewSettings struct {
 	Hidden map[string]bool `json:"hidden"`
 }
 
+func DefaultUserSettings() UserSettings {
+	return UserSettings{
+		Hosts: []string{"localhost", "www.github.com"},
+		View: UserViewSettings{
+			Filter: FilterSmart,
+			Sort:   SortByIP,
+			Rate:   UpdateRate100ms,
+			Cols:   []int{1, 2, 3, 4, 5, 6},
+			Hidden: map[string]bool{},
+		},
+	}
+}
+
+func ValidateUserSettings(settings UserSettings) error {
+	for i, h := range settings.Hosts {
+		if strings.TrimSpace(h) == "" {
+			return fmt.Errorf("hosts[%d] is empty", i)
+		}
+	}
+	if !validFilterMode(settings.View.Filter) {
+		return fmt.Errorf("view.filter is invalid: %d", settings.View.Filter)
+	}
+	if !validSortMode(settings.View.Sort) {
+		return fmt.Errorf("view.sort is invalid: %d", settings.View.Sort)
+	}
+	if !validUpdateRate(settings.View.Rate) {
+		return fmt.Errorf("view.rate is invalid: %d", settings.View.Rate)
+	}
+	seen := make(map[int]bool, 6)
+	for i, c := range settings.View.Cols {
+		if c < 1 || c > 6 {
+			return fmt.Errorf("view.cols[%d] out of range: %d", i, c)
+		}
+		if seen[c] {
+			return fmt.Errorf("view.cols contains duplicate: %d", c)
+		}
+		seen[c] = true
+	}
+	for k := range settings.View.Hidden {
+		if strings.TrimSpace(k) == "" {
+			// ignore legacy empty key
+			continue
+		}
+	}
+	return nil
+}
+
 func userSettingsPath() (string, error) {
 	if p := strings.TrimSpace(os.Getenv("MPING_CONFIG")); p != "" {
 		return p, nil
@@ -49,7 +96,14 @@ func LoadUserSettings() (UserSettings, error) {
 		}
 		return settings, err
 	}
-	return parseUserSettings(b)
+	parsed, err := parseUserSettings(b)
+	if err != nil {
+		return settings, err
+	}
+	if err := ValidateUserSettings(parsed); err != nil {
+		return settings, err
+	}
+	return parsed, nil
 }
 
 func SaveUserSettings(settings UserSettings) error {
@@ -206,8 +260,27 @@ func parseUserSettings(b []byte) (UserSettings, error) {
 
 func marshalUserSettingsYAML(settings UserSettings) []byte {
 	var b strings.Builder
-	b.WriteString("# mping user settings\n")
-	b.WriteString("# You can set MPING_CONFIG to override this path.\n\n")
+	b.WriteString("# mping config\n")
+	b.WriteString("#\n")
+	b.WriteString("# This file is automatically loaded on startup and saved on exit.\n")
+	b.WriteString("# Override the location via the environment variable: MPING_CONFIG\n")
+	b.WriteString("#\n")
+	b.WriteString("# hosts:\n")
+	b.WriteString("#   - A list of targets to probe.\n")
+	b.WriteString("#   - Supports: hostnames, IPs, CIDR (e.g. \"192.168.1.0/24\"), and tcp://host:port.\n")
+	b.WriteString("#\n")
+	b.WriteString("# view:\n")
+	b.WriteString("#   - Initial TUI/Web view state.\n")
+	b.WriteString("#   filter:\n")
+	b.WriteString("#     0=All, 1=Smart (online or ever-seen), 2=Online, 3=Offline\n")
+	b.WriteString("#   sort:\n")
+	b.WriteString("#     0=Name, 1=Status, 2=RTT, 3=Last Seen, 4=IP\n")
+	b.WriteString("#   rate:\n")
+	b.WriteString("#     0=100ms, 1=1s, 2=5s, 3=30s\n")
+	b.WriteString("#   cols:\n")
+	b.WriteString("#     Visible columns (1..6): 1=Status, 2=Name, 3=IP, 4=RTT, 5=Last Reply, 6=Last Loss\n")
+	b.WriteString("#   hidden:\n")
+	b.WriteString("#     Host key -> true to hide it in the list.\n\n")
 
 	if len(settings.Hosts) == 0 {
 		b.WriteString("hosts: []\n")
@@ -225,24 +298,19 @@ func marshalUserSettingsYAML(settings UserSettings) []byte {
 	b.WriteString(fmt.Sprintf("  sort: %d\n", settings.View.Sort))
 	b.WriteString(fmt.Sprintf("  rate: %d\n", settings.View.Rate))
 
-	if len(settings.View.Cols) > 0 {
-		b.WriteString("  cols: [")
-		for i, c := range settings.View.Cols {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			b.WriteString(strconv.Itoa(c))
+	b.WriteString("  cols: [")
+	for i, c := range settings.View.Cols {
+		if i > 0 {
+			b.WriteString(", ")
 		}
-		b.WriteString("]\n")
-	} else {
-		b.WriteString("  cols: []\n")
+		b.WriteString(strconv.Itoa(c))
 	}
+	b.WriteString("]\n")
 
 	if len(settings.View.Hidden) == 0 {
 		b.WriteString("  hidden: {}\n")
 	} else {
 		b.WriteString("  hidden:\n")
-		// stable output
 		keys := make([]string, 0, len(settings.View.Hidden))
 		for k := range settings.View.Hidden {
 			keys = append(keys, k)
@@ -328,7 +396,7 @@ func parseYAMLIntList(v string) []int {
 		var out []int
 		inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(v, "["), "]"))
 		if inner == "" {
-			return nil
+			return []int{}
 		}
 		for _, part := range strings.Split(inner, ",") {
 			if n, ok := parseYAMLInt(part); ok {

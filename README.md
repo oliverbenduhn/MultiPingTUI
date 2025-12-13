@@ -36,6 +36,7 @@ mping localhost google.com 8.8.8.8
 
 **Persisted Settings:**
 - TUI settings + last host list are automatically loaded/saved from `~/.config/mping/config.yaml` (override with `MPING_CONFIG`).
+- If you start `mping` without any hosts and no config exists yet, it creates a commented default config with `localhost` and `www.github.com`.
 
 **Subnet Scanning:**
 ```bash

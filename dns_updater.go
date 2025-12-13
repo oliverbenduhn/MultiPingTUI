@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -116,22 +118,23 @@ func (d *DNSUpdater) performDNSUpdates() {
 		d.cacheMu.RUnlock()
 
 		if found && time.Now().Before(entry.expiresAt) {
-			// Cache hit, update wrapper if needed (though wrapper usually holds the state)
-			// Ideally we would set the cached name on the wrapper here if it was lost,
-			// but updateHostDisplayName does the lookup AND set.
-			// We should modify updateHostDisplayName or do the check here.
-			// For now, let's assume if it's in cache, the wrapper likely has it,
-			// OR we can skip the lookup.
-			// Actually, the wrapper stores the "hrepr".
-			// If we skip calling updateHostDisplayName, we rely on the wrapper keeping it.
-			// But if the wrapper doesn't have it yet (e.g. first run), we need to set it.
-			// Let's modify the logic to use the cache.
-			if stats.GetHostRepr() != "" {
-				continue // Already has a name and cache is valid
-			}
-			// If wrapper has no name but we have it in cache, set it
+			// Cache hit: after a host list reload, wrappers may fall back to showing the raw IP again.
+			// If the current display name still looks like an IP, restore the cached reverse-DNS name.
 			if entry.name != "" {
-				wrapper.SetHostRepr(entry.name)
+				current := stats.GetHostRepr()
+				if current == "" || looksLikeIPRepr(current) {
+					if current != entry.name {
+						wrapper.SetHostRepr(entry.name)
+					}
+					continue
+				}
+			}
+			// If the wrapper already has a non-IP name, keep it and skip the lookup.
+			if stats.GetHostRepr() != "" {
+				continue
+			}
+			// Negative cache hit and still no name: skip lookup.
+			if entry.name == "" {
 				continue
 			}
 		}
@@ -184,4 +187,19 @@ func (d *DNSUpdater) performDNSUpdates() {
 	if DebugMode && updated > 0 {
 		fmt.Fprintf(os.Stderr, "DEBUG: Updated DNS names for %d online hosts\n", updated)
 	}
+}
+
+func looksLikeIPRepr(repr string) bool {
+	r := repr
+	// Allow tcp://host:port
+	if strings.HasPrefix(r, "tcp://") {
+		r = strings.TrimPrefix(r, "tcp://")
+	}
+	// Strip brackets
+	r = strings.Trim(r, "[]")
+	// Strip port if present
+	if host, _, err := net.SplitHostPort(r); err == nil {
+		r = strings.Trim(host, "[]")
+	}
+	return net.ParseIP(r) != nil
 }

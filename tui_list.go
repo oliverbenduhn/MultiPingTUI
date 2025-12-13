@@ -192,6 +192,9 @@ shrinkColumns:
 		}
 
 		ip := stats.iprepr
+		if ip == "" {
+			ip = "-"
+		}
 		if len(ip) > ipWidth {
 			if ipWidth > 3 {
 				ip = ip[:ipWidth-3] + "..."
@@ -471,4 +474,3 @@ func (m *HostListModel) getColumnName(colNum int) string {
 		return "Unknown"
 	}
 }
-

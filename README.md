@@ -128,10 +128,13 @@ mping -once 192.168.1.0/24
 
 ### Status Web Server
 
-In TUI mode a small read-only status server is started on `127.0.0.1:8080` to mirror the current view:
+In TUI mode a small status server is started on `http://0.0.0.0:8080` to mirror the current view. The web UI stays in sync with the TUI for filter/sort/visible columns (changes in either UI affect the other).
 
-- `/` plain text summary
+- `/` live HTML view (filter/sort/columns + resizable columns via mouse drag)
+- `/text` plain text summary
 - `/json` JSON array with host states, RTT, and last reply/loss information
+- `/state` JSON object containing both `view` and `statuses`
+- `/view` GET/POST view state (filter/sort/visible columns)
 
 Use `-web-port <port>` to change the port or `-web-port 0` to disable the server.
 

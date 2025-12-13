@@ -3,14 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"os/signal"
 	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	"os"
-	"os/signal"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -57,8 +57,6 @@ type TUIModel struct {
 	hostList         HostListModel
 	quitting         bool
 	transitionWriter *TransitionWriter
-	editingHosts     bool
-	hostInput        string
 	statusMessage    string
 	statsCache       map[string]PWStats // cache stats per wrapper to avoid recalculation
 	statsCacheMu     sync.RWMutex       // mutex for statsCache
@@ -94,6 +92,10 @@ type traceState struct {
 	output     string
 	err        string
 	took       time.Duration
+}
+
+type configEditedMsg struct {
+	err error
 }
 
 func NewTUIModel(ps *PingService, repo HostRepository, tw *TransitionWriter, initialFilter FilterMode, globalStats *GlobalStatistics) *TUIModel {
@@ -137,7 +139,7 @@ type keyMap struct {
 	FilterCycle key.Binding
 	SortCycle   key.Binding
 	Escape      key.Binding
-	EditHosts   key.Binding
+	EditConfig  key.Binding
 	HideHost    key.Binding
 	ShowAll     key.Binding
 	CycleRate   key.Binding
@@ -188,9 +190,9 @@ var keys = keyMap{
 		key.WithKeys("esc"),
 		key.WithHelp("esc", "back"),
 	),
-	EditHosts: key.NewBinding(
+	EditConfig: key.NewBinding(
 		key.WithKeys("e"),
-		key.WithHelp("e", "edit hosts"),
+		key.WithHelp("e", "edit config"),
 	),
 	HideHost: key.NewBinding(
 		key.WithKeys("delete"),
@@ -350,25 +352,6 @@ func (m *TUIModel) getCachedStats(wrapper PingWrapperInterface) PWStats {
 	}
 }
 
-func (m *TUIModel) applyHostInput() {
-	raw := strings.TrimSpace(m.hostInput)
-	m.hostsRaw = strings.Fields(raw)
-	hosts := parseHostsInput(raw)
-	m.ps.ReplaceHosts(hosts)
-	m.hostList.cursor = -1
-	m.hostList.scrollOffset = 0
-	m.hostList.filterMode = FilterAll
-	m.header.filterMode = FilterAll
-	m.setViewMode(viewList)
-	if len(hosts) == 0 {
-		m.statusMessage = "Cleared hosts; no targets configured."
-	} else {
-		m.statusMessage = fmt.Sprintf("Updated hosts (%d)", len(hosts))
-	}
-	m.hostList.cacheInvalidated = true
-	m.editingHosts = false
-}
-
 func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Keep TUI view synchronized with the web live view (when enabled).
 	m.syncViewFromStatusServer()
@@ -420,41 +403,32 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyMsg:
-		if m.editingHosts {
-			switch {
-			case key.Matches(msg, keys.Escape):
-				m.editingHosts = false
-				m.hostInput = ""
-				m.statusMessage = ""
-				return m, nil
-			case key.Matches(msg, keys.Enter):
-				m.applyHostInput()
-				return m, nil
-			}
-			// basic inline input editing
-			switch msg.Type {
-			case tea.KeyBackspace, tea.KeyDelete:
-				if len(m.hostInput) > 0 {
-					m.hostInput = m.hostInput[:len(m.hostInput)-1]
-				}
-				return m, nil
-			case tea.KeyCtrlL:
-				m.hostInput = ""
-				return m, nil
-			case tea.KeyCtrlN:
-				m.hostInput += "\n"
-				return m, nil
-			case tea.KeySpace:
-				m.hostInput += " "
-				return m, nil
-			case tea.KeyRunes:
-				m.hostInput += string(msg.Runes)
-				return m, nil
-			}
+	case configEditedMsg:
+		settings, err := LoadUserSettings()
+		if err != nil {
+			m.statusMessage = fmt.Sprintf("Failed to reload config: %v", err)
 			return m, nil
 		}
+		applyUserSettingsToModel(m, settings)
 
+		// Update hosts if they changed.
+		if len(settings.Hosts) > 0 && !sameStringSlice(settings.Hosts, m.hostsRaw) {
+			m.hostsRaw = append([]string{}, settings.Hosts...)
+			hosts := parseHostsInput(strings.Join(settings.Hosts, "\n"))
+			m.ps.ReplaceHosts(hosts)
+			m.hostList.cursor = -1
+			m.hostList.scrollOffset = 0
+			m.hostList.cacheInvalidated = true
+		}
+		if msg.err != nil {
+			m.statusMessage = fmt.Sprintf("Config edited (with error): %v", msg.err)
+		} else {
+			m.statusMessage = "Config reloaded"
+		}
+		m.pushStatusView()
+		return m, nil
+
+	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, keys.Quit):
 			m.quitting = true
@@ -651,21 +625,26 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pushStatusView()
 			return m, nil
 
-		case key.Matches(msg, keys.EditHosts):
-			if m.viewMode != viewList {
+		case key.Matches(msg, keys.EditConfig):
+			path, err := userSettingsPath()
+			if err != nil {
+				m.statusMessage = fmt.Sprintf("Failed to locate config: %v", err)
 				return m, nil
 			}
-			m.editingHosts = true
-			m.statusMessage = "Edit hosts: one per line, Enter=apply, Esc=cancel, Ctrl+L=clear, Ctrl+N=new line."
-			var b strings.Builder
-			for i, w := range m.repo.GetAll() {
-				if i > 0 {
-					b.WriteString("\n")
-				}
-				b.WriteString(w.Host())
+			// Ensure config exists so the editor has something to open.
+			_ = ensureConfigFile(path)
+
+			exe, err := os.Executable()
+			if err != nil {
+				m.statusMessage = fmt.Sprintf("Failed to locate executable: %v", err)
+				return m, nil
 			}
-			m.hostInput = b.String()
-			return m, nil
+			cmd := exec.Command(exe, "-edit-config")
+			cmd.Env = append(os.Environ(), "MPING_CONFIG="+path)
+			m.statusMessage = fmt.Sprintf("Editing config: %s (Ctrl+S save, Esc close)", path)
+			return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+				return configEditedMsg{err: err}
+			})
 
 		default:
 			// Handle number keys 1-6 for column toggling
@@ -688,6 +667,18 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *TUIModel) setViewMode(mode tuiViewMode) {
@@ -866,11 +857,6 @@ func (m *TUIModel) View() string {
 		s.WriteString("\n\n")
 	}
 
-	if m.editingHosts {
-		s.WriteString(m.renderHostInput())
-		return s.String()
-	}
-
 	// Get filtered and sorted wrappers
 	filtered := m.hostList.getFilteredWrappers(m.repo.GetAll(), m.getCachedStats)
 
@@ -891,17 +877,6 @@ func (m *TUIModel) View() string {
 	s.WriteString(m.footer.View())
 
 	return s.String()
-}
-
-func (m *TUIModel) renderHostInput() string {
-	var b strings.Builder
-	b.WriteString("Edit hosts (one per line, CIDR allowed):\n")
-	b.WriteString("Ctrl+L: clear all │ Ctrl+N: new line │ enter: apply │ esc: cancel\n\n")
-	b.WriteString("hosts>\n")
-	b.WriteString(m.hostInput)
-	b.WriteString("█")
-	b.WriteString("\n\n")
-	return b.String()
 }
 
 func (m *TUIModel) renderDetailView(wrapper PingWrapperInterface) string {

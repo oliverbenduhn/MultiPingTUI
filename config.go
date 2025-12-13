@@ -22,6 +22,7 @@ type Config struct {
 	OnlyOffline       bool
 	Debug             bool
 	NoDNS             bool
+	EditConfig        bool
 	Args              []string
 }
 
@@ -45,6 +46,7 @@ func LoadConfig() *Config {
 	flag.BoolVar(&c.OnlyOffline, "only-offline", false, "show only offline hosts (initial filter)")
 	flag.BoolVar(&c.Debug, "debug", false, "enable debug output")
 	flag.BoolVar(&c.NoDNS, "no-dns", false, "skip reverse DNS lookups (faster startup for large subnets)")
+	flag.BoolVar(&c.EditConfig, "edit-config", false, "open the config editor (~/.config/mping/config.yaml) and exit")
 
 	flag.Usage = usage
 	flag.Parse()

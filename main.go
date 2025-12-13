@@ -66,6 +66,19 @@ func main() {
 		fmt.Fprintf(os.Stderr, "DEBUG: failed to load user settings: %v\n", settingsErr)
 	}
 
+	if config.EditConfig {
+		path, err := userSettingsPath()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to locate config: %v\n", err)
+			os.Exit(1)
+		}
+		if err := RunConfigEditor(path); err != nil {
+			fmt.Fprintf(os.Stderr, "config editor error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if config.PprofAddr != "" {
 		go startPprof(config.PprofAddr)
 	}

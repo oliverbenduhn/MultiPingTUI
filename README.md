@@ -27,9 +27,9 @@ mping localhost google.com 8.8.8.8
 - `Enter` - Show detailed view for selected host
 - `d` - Toggle dashboard summary view
 - `t` - Run traceroute (in detail view)
+- `e` - Edit config file (in-terminal, Ctrl+S save, Esc close)
 - `f` - Cycle filter: smart (online or seen) → online → offline → all
 - `s` - Cycle sort: name → status → RTT (round-trip time) → last seen → IP
-- `e` - Edit host list (replace hosts while running)
 - `1-6` - Toggle column visibility (1:Status, 2:Name, 3:IP, 4:RTT, 5:Last Reply, 6:Last Loss)
 - `Esc` - Back from detail view
 - `q` or `Ctrl+C` - Quit
@@ -42,7 +42,7 @@ mping localhost google.com 8.8.8.8
 mping 192.168.1.0/24
 ```
 
-You can start the TUI without providing hosts and add them at runtime with `e`.
+You can start the TUI without providing hosts and add them at runtime by editing the config file (`e`).
 
 **Legacy Display Mode:**
 ```bash

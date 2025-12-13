@@ -17,11 +17,13 @@ import (
 
 // HostStatus represents the public status information for a host.
 type HostStatus struct {
+	Key              string `json:"key"`
 	Host             string `json:"host"`
 	IP               string `json:"ip"`
 	Online           bool   `json:"online"`
 	RTT              string `json:"rtt"`
 	LastReply        string `json:"last_reply"`
+	OnlineTime       string `json:"online_time"`
 	LastLossAgo      string `json:"last_loss_ago,omitempty"`
 	LastLossDuration string `json:"last_loss_duration,omitempty"`
 	Error            string `json:"error,omitempty"`
@@ -450,6 +452,10 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
     }
     .name-cell {
       font-weight: 500;
+      cursor: pointer;
+    }
+    .name-cell:hover {
+      text-decoration: underline;
     }
     #updated {
       margin-top: 16px;
@@ -521,6 +527,94 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
         gap: 6px;
       }
     }
+    .detail-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      z-index: 1000;
+    }
+    .detail-overlay.open {
+      display: flex;
+    }
+    .detail-panel {
+      width: min(720px, 100%%);
+      background: var(--bg-panel);
+      border: 1px solid rgba(240, 246, 252, 0.12);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+    .detail-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(240, 246, 252, 0.07);
+      background: rgba(240, 246, 252, 0.02);
+    }
+    .detail-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .detail-close {
+      border: 1px solid rgba(240, 246, 252, 0.12);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      padding: 6px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .detail-body {
+      padding: 16px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px 18px;
+    }
+    .detail-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .detail-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 700;
+    }
+    .detail-value {
+      font-size: 14px;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .detail-value.mono {
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 13px;
+      color: var(--blue);
+    }
+    .detail-value.error {
+      color: var(--red);
+      white-space: normal;
+      overflow: visible;
+    }
+    @media (max-width: 720px) {
+      .detail-body {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
 <body>
@@ -579,20 +673,35 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
     <span>Loading…</span>
   </div>
 
+  <div id="detail-overlay" class="detail-overlay" aria-hidden="true">
+    <div class="detail-panel" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+      <div class="detail-header">
+        <div class="detail-title" id="detail-title">Details</div>
+        <button class="detail-close" id="detail-close" type="button">Close</button>
+      </div>
+      <div class="detail-body" id="detail-body"></div>
+    </div>
+  </div>
+
   <script>
     const initialColumns = %s;
     const columnNames = {1:'Status', 2:'Name', 3:'IP Address', 4:'RTT', 5:'Last Reply', 6:'Last Loss'};
     const tbody = document.querySelector('#status tbody');
     const theadRow = document.querySelector('#status thead tr');
     const colgroup = document.querySelector('#colgroup');
-	    const updatedEl = document.querySelector('#updated span:last-child');
-	    const syncPill = document.querySelector('#sync-pill');
-	    const filterEl = document.querySelector('#filter');
-	    const rateEl = document.querySelector('#rate');
-	    const sortEl = document.querySelector('#sort');
-	    const colsEl = document.querySelector('#cols');
-	    let refreshTimer = null;
-	    let refreshIntervalMs = 1000;
+    const updatedEl = document.querySelector('#updated span:last-child');
+    const syncPill = document.querySelector('#sync-pill');
+    const filterEl = document.querySelector('#filter');
+    const rateEl = document.querySelector('#rate');
+    const sortEl = document.querySelector('#sort');
+    const colsEl = document.querySelector('#cols');
+    const detailOverlay = document.querySelector('#detail-overlay');
+    const detailTitle = document.querySelector('#detail-title');
+    const detailBody = document.querySelector('#detail-body');
+    const detailClose = document.querySelector('#detail-close');
+    let refreshTimer = null;
+    let refreshIntervalMs = 1000;
+    let selectedKey = null;
 
     const WIDTHS_KEY = 'mping.columnWidths.v1';
     const DEFAULT_WIDTHS = {1: 120, 2: 260, 3: 210, 4: 200, 5: 170, 6: 240};
@@ -726,10 +835,67 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       return html;
     }
 
-	    function renderUpdated(text) {
-	      const now = new Date();
-	      updatedEl.textContent = text + ' · ' + now.toLocaleTimeString();
-	    }
+    function renderUpdated(text) {
+      const now = new Date();
+      updatedEl.textContent = text + ' · ' + now.toLocaleTimeString();
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function openDetail(row) {
+      selectedKey = row.key || null;
+      detailTitle.textContent = row.host || 'Details';
+      const statusText = row.online ? 'ONLINE' : 'OFFLINE';
+      const rttText = row.online ? (row.rtt || '-') : '-';
+      const lossText = row.last_loss_ago ? (row.last_loss_ago + ' (' + (row.last_loss_duration || '-') + ')') : '-';
+
+      const parts = [
+        ['Host', row.host || '-', ''],
+        ['IP', row.ip || '-', 'mono'],
+        ['Status', statusText, row.online ? '' : ''],
+        ['RTT', rttText, 'mono'],
+        ['Last Reply', row.last_reply || '-', ''],
+        ['Last Loss', lossText, ''],
+        ['Online Time', row.online_time || '-', ''],
+      ];
+      if (row.error) {
+        parts.push(['Error', row.error, 'error']);
+      }
+
+      detailBody.innerHTML = parts.map(([label, value, cls]) => {
+        const klass = cls ? ('detail-value ' + cls) : 'detail-value';
+        return (
+          '<div class="detail-row">' +
+            '<div class="detail-label">' + escapeHtml(label) + '</div>' +
+            '<div class="' + klass + '">' + escapeHtml(value) + '</div>' +
+          '</div>'
+        );
+      }).join('');
+
+      detailOverlay.classList.add('open');
+      detailOverlay.setAttribute('aria-hidden', 'false');
+    }
+
+    function closeDetail() {
+      detailOverlay.classList.remove('open');
+      detailOverlay.setAttribute('aria-hidden', 'true');
+      selectedKey = null;
+    }
+
+    detailClose.addEventListener('click', closeDetail);
+    detailOverlay.addEventListener('click', (e) => {
+      if (e.target === detailOverlay) closeDetail();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && detailOverlay.classList.contains('open')) closeDetail();
+    });
 
 	    function rateToMs(rate) {
 	      switch (rate) {
@@ -808,6 +974,7 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
             } else if (col === 2) {
               td.className = 'name-cell';
               td.textContent = val;
+              td.dataset.key = row.key || '';
             } else if (col === 3) {
               td.className = 'ip-cell';
               td.textContent = val;
@@ -819,6 +986,12 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
             tr.appendChild(td);
           });
           tbody.appendChild(tr);
+        }
+
+        // Keep detail panel updated if it is open.
+        if (selectedKey) {
+          const match = data.find((r) => r.key === selectedKey);
+          if (match) openDetail(match);
         }
         syncPill.textContent = 'synced';
         renderUpdated('Connected');
@@ -859,9 +1032,27 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       await refresh();
     });
 
-	    setAutoRefresh(1000);
-	    refresh();
-	  </script>
+    tbody.addEventListener('click', (e) => {
+      const cell = e.target && e.target.closest ? e.target.closest('td.name-cell') : null;
+      if (!cell) return;
+      const key = cell.dataset.key;
+      if (!key) return;
+      // Find the row by key from last rendered DOM: stash row data on the tr via dataset?
+      // We don't have it, so request a fresh state quickly and open from that.
+      (async () => {
+        try {
+          const res = await fetch('/state', {cache:'no-store'});
+          const state = await res.json();
+          const data = state.statuses || [];
+          const match = data.find((r) => r.key === key);
+          if (match) openDetail(match);
+        } catch (_) {}
+      })();
+    });
+
+    setAutoRefresh(1000);
+    refresh();
+  </script>
 </body>
 </html>`, marshalColumns(cols))
 }
@@ -876,6 +1067,7 @@ func (s *StatusServer) collectStatuses() []HostStatus {
 	for _, wrapper := range filtered {
 		stats := s.statsProvider(wrapper)
 
+		key := wrapper.Host()
 		host := stats.GetHostRepr()
 		if host == "" {
 			host = wrapper.Host()
@@ -893,6 +1085,8 @@ func (s *StatusServer) collectStatuses() []HostStatus {
 			lastReply = fmt.Sprintf("%s ago", time.Duration(stats.last_seen_nano).Round(time.Second))
 		}
 
+		onlineTime := stats.OnlineUptime(now.UnixNano()).Round(time.Second).String()
+
 		var lastLossAgo, lastLossDuration string
 		if stats.last_loss_nano > 0 {
 			lastLossAgo = fmt.Sprintf("%s ago", time.Duration(now.UnixNano()-stats.last_loss_nano).Round(time.Second))
@@ -900,11 +1094,13 @@ func (s *StatusServer) collectStatuses() []HostStatus {
 		}
 
 		statuses = append(statuses, HostStatus{
+			Key:              key,
 			Host:             host,
 			IP:               ip,
 			Online:           online,
 			RTT:              rtt,
 			LastReply:        lastReply,
+			OnlineTime:       onlineTime,
 			LastLossAgo:      lastLossAgo,
 			LastLossDuration: lastLossDuration,
 			Error:            stats.error_message,

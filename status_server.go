@@ -524,6 +524,15 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
     <p class="muted">Auto-refreshes every second · <code>/state</code> includes view+data · <code>/json</code> data only · <code>/text</code> plain text</p>
     <div class="controls">
       <div class="control-group">
+        <label for="filter">Filter</label>
+        <select id="filter">
+          <option value="0">All</option>
+          <option value="1">Smart</option>
+          <option value="2">Online</option>
+          <option value="3">Offline</option>
+        </select>
+      </div>
+      <div class="control-group">
         <label for="sort">Sort</label>
         <select id="sort">
           <option value="0">Name</option>
@@ -564,6 +573,7 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
     const colgroup = document.querySelector('#colgroup');
     const updatedEl = document.querySelector('#updated span:last-child');
     const syncPill = document.querySelector('#sync-pill');
+    const filterEl = document.querySelector('#filter');
     const sortEl = document.querySelector('#sort');
     const colsEl = document.querySelector('#cols');
     const REFRESH_MS = 1000;
@@ -600,6 +610,9 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
     }
 
     function renderControls(view) {
+      if (typeof view.filter === 'number') {
+        filterEl.value = String(view.filter);
+      }
       if (typeof view.sort === 'number') {
         sortEl.value = String(view.sort);
       }
@@ -779,6 +792,13 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       const sort = Number(sortEl.value);
       syncPill.textContent = 'updating…';
       await updateView({sort});
+      await refresh();
+    });
+
+    filterEl.addEventListener('change', async () => {
+      const filter = Number(filterEl.value);
+      syncPill.textContent = 'updating…';
+      await updateView({filter});
       await refresh();
     });
 

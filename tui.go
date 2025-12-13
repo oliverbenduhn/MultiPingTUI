@@ -542,6 +542,12 @@ func (m *TUIModel) syncViewFromStatusServer() {
 		changed = true
 	}
 
+	if view.Rate != m.header.updateRate && view.Rate >= UpdateRate100ms && view.Rate <= UpdateRate30s {
+		m.header.updateRate = view.Rate
+		m.statusMessage = fmt.Sprintf("Update rate: %s", m.header.getUpdateRateString())
+		changed = true
+	}
+
 	if view.Hidden != nil {
 		if !sameHiddenHosts(m.hostList.hiddenHosts, view.Hidden) {
 			m.hostList.hiddenHosts = cloneHiddenHosts(view.Hidden)
@@ -680,6 +686,7 @@ func (m *TUIModel) pushStatusView() {
 	m.statusServer.UpdateView(ServerView{
 		Filter: m.hostList.filterMode,
 		Sort:   m.hostList.sortMode,
+		Rate:   m.header.updateRate,
 		Hidden: cloneHiddenHosts(m.hostList.hiddenHosts),
 		Cols:   visibleColumnsList(m.hostList.visibleColumns),
 	})
@@ -772,6 +779,7 @@ func RunTUI(ps *PingService, repo HostRepository, tw *TransitionWriter, initialF
 		initialView := ServerView{
 			Filter: model.hostList.filterMode,
 			Sort:   model.hostList.sortMode,
+			Rate:   model.header.updateRate,
 			Hidden: cloneHiddenHosts(model.hostList.hiddenHosts),
 			Cols:   visibleColumnsList(model.hostList.visibleColumns),
 		}

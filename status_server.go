@@ -30,6 +30,7 @@ type HostStatus struct {
 type ServerView struct {
 	Filter FilterMode      `json:"filter"`
 	Sort   SortMode        `json:"sort"`
+	Rate   UpdateRate      `json:"rate"`
 	Hidden map[string]bool `json:"hidden"`
 	Cols   []int           `json:"cols"`
 }
@@ -134,6 +135,7 @@ func (s *StatusServer) stateHandler(w http.ResponseWriter, _ *http.Request) {
 type viewPatch struct {
 	Filter *FilterMode     `json:"filter,omitempty"`
 	Sort   *SortMode       `json:"sort,omitempty"`
+	Rate   *UpdateRate     `json:"rate,omitempty"`
 	Cols   []int           `json:"cols,omitempty"`
 	Hidden map[string]bool `json:"hidden,omitempty"`
 }
@@ -163,6 +165,9 @@ func (s *StatusServer) viewHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		if patch.Sort != nil && validSortMode(*patch.Sort) {
 			s.view.Sort = *patch.Sort
+		}
+		if patch.Rate != nil && validUpdateRate(*patch.Rate) {
+			s.view.Rate = *patch.Rate
 		}
 		if patch.Hidden != nil {
 			s.view.Hidden = patch.Hidden
@@ -522,20 +527,29 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
   <header>
     <h1>🌐 MultiPingTUI Live Status</h1>
     <p class="muted">Auto-refreshes every second · <code>/state</code> includes view+data · <code>/json</code> data only · <code>/text</code> plain text</p>
-    <div class="controls">
-      <div class="control-group">
-        <label for="filter">Filter</label>
-        <select id="filter">
-          <option value="0">All</option>
-          <option value="1">Smart</option>
-          <option value="2">Online</option>
-          <option value="3">Offline</option>
-        </select>
-      </div>
-      <div class="control-group">
-        <label for="sort">Sort</label>
-        <select id="sort">
-          <option value="0">Name</option>
+	    <div class="controls">
+	      <div class="control-group">
+	        <label for="filter">Filter</label>
+	        <select id="filter">
+	          <option value="0">All</option>
+	          <option value="1">Smart</option>
+	          <option value="2">Online</option>
+	          <option value="3">Offline</option>
+	        </select>
+	      </div>
+	      <div class="control-group">
+	        <label for="rate">Rate</label>
+	        <select id="rate">
+	          <option value="0">100ms</option>
+	          <option value="1">1s</option>
+	          <option value="2">5s</option>
+	          <option value="3">30s</option>
+	        </select>
+	      </div>
+	      <div class="control-group">
+	        <label for="sort">Sort</label>
+	        <select id="sort">
+	          <option value="0">Name</option>
           <option value="1">Status</option>
           <option value="2">RTT</option>
           <option value="3">Last Seen</option>
@@ -571,12 +585,14 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
     const tbody = document.querySelector('#status tbody');
     const theadRow = document.querySelector('#status thead tr');
     const colgroup = document.querySelector('#colgroup');
-    const updatedEl = document.querySelector('#updated span:last-child');
-    const syncPill = document.querySelector('#sync-pill');
-    const filterEl = document.querySelector('#filter');
-    const sortEl = document.querySelector('#sort');
-    const colsEl = document.querySelector('#cols');
-    const REFRESH_MS = 1000;
+	    const updatedEl = document.querySelector('#updated span:last-child');
+	    const syncPill = document.querySelector('#sync-pill');
+	    const filterEl = document.querySelector('#filter');
+	    const rateEl = document.querySelector('#rate');
+	    const sortEl = document.querySelector('#sort');
+	    const colsEl = document.querySelector('#cols');
+	    let refreshTimer = null;
+	    let refreshIntervalMs = 1000;
 
     const WIDTHS_KEY = 'mping.columnWidths.v1';
     const DEFAULT_WIDTHS = {1: 120, 2: 260, 3: 210, 4: 200, 5: 170, 6: 240};
@@ -609,13 +625,16 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       return DEFAULT_WIDTHS[col] || 160;
     }
 
-    function renderControls(view) {
-      if (typeof view.filter === 'number') {
-        filterEl.value = String(view.filter);
-      }
-      if (typeof view.sort === 'number') {
-        sortEl.value = String(view.sort);
-      }
+	    function renderControls(view) {
+	      if (typeof view.filter === 'number') {
+	        filterEl.value = String(view.filter);
+	      }
+	      if (typeof view.rate === 'number') {
+	        rateEl.value = String(view.rate);
+	      }
+	      if (typeof view.sort === 'number') {
+	        sortEl.value = String(view.sort);
+	      }
 
       const cols = normalizeCols(view.cols);
       colsEl.innerHTML = '';
@@ -707,19 +726,37 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       return html;
     }
 
-    function renderUpdated(text) {
-      const now = new Date();
-      updatedEl.textContent = text + ' · ' + now.toLocaleTimeString();
-    }
+	    function renderUpdated(text) {
+	      const now = new Date();
+	      updatedEl.textContent = text + ' · ' + now.toLocaleTimeString();
+	    }
 
-    async function updateView(patch) {
-      await fetch('/view', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(patch),
-        cache: 'no-store'
-      });
-    }
+	    function rateToMs(rate) {
+	      switch (rate) {
+	        case 0: return 250;    // UpdateRate100ms (cap web polling a bit)
+	        case 1: return 1000;   // UpdateRate1s
+	        case 2: return 5000;   // UpdateRate5s
+	        case 3: return 30000;  // UpdateRate30s
+	        default: return 1000;
+	      }
+	    }
+
+	    function setAutoRefresh(ms) {
+	      if (refreshTimer) {
+	        clearInterval(refreshTimer);
+	      }
+	      refreshIntervalMs = ms;
+	      refreshTimer = setInterval(refresh, ms);
+	    }
+
+	    async function updateView(patch) {
+	      await fetch('/view', {
+	        method: 'POST',
+	        headers: {'Content-Type': 'application/json'},
+	        body: JSON.stringify(patch),
+	        cache: 'no-store'
+	      });
+	    }
 
     function currentSelectedCols() {
       const cols = [];
@@ -731,15 +768,19 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
 
     async function refresh() {
       try {
-        const res = await fetch('/state', {cache:'no-store', headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}});
-        const state = await res.json();
-        const view = state.view || {};
-        const columns = normalizeCols(view.cols || initialColumns);
-        renderTableStructure(columns);
-        renderControls(view);
+	        const res = await fetch('/state', {cache:'no-store', headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}});
+	        const state = await res.json();
+	        const view = state.view || {};
+	        const columns = normalizeCols(view.cols || initialColumns);
+	        renderTableStructure(columns);
+	        renderControls(view);
+	        const desiredInterval = rateToMs(view.rate);
+	        if (desiredInterval !== refreshIntervalMs) {
+	          setAutoRefresh(desiredInterval);
+	        }
 
-        const data = state.statuses || [];
-        tbody.innerHTML = '';
+	        const data = state.statuses || [];
+	        tbody.innerHTML = '';
 
         for (const row of data) {
           const tr = document.createElement('tr');
@@ -795,24 +836,32 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       await refresh();
     });
 
-    filterEl.addEventListener('change', async () => {
-      const filter = Number(filterEl.value);
-      syncPill.textContent = 'updating…';
-      await updateView({filter});
-      await refresh();
-    });
+	    filterEl.addEventListener('change', async () => {
+	      const filter = Number(filterEl.value);
+	      syncPill.textContent = 'updating…';
+	      await updateView({filter});
+	      await refresh();
+	    });
 
-    colsEl.addEventListener('change', async (e) => {
-      if (!e.target || e.target.type !== 'checkbox') return;
-      const cols = currentSelectedCols();
-      syncPill.textContent = 'updating…';
+	    rateEl.addEventListener('change', async () => {
+	      const rate = Number(rateEl.value);
+	      syncPill.textContent = 'updating…';
+	      await updateView({rate});
+	      setAutoRefresh(rateToMs(rate));
+	      await refresh();
+	    });
+
+	    colsEl.addEventListener('change', async (e) => {
+	      if (!e.target || e.target.type !== 'checkbox') return;
+	      const cols = currentSelectedCols();
+	      syncPill.textContent = 'updating…';
       await updateView({cols});
       await refresh();
     });
 
-    refresh();
-    setInterval(refresh, REFRESH_MS);
-  </script>
+	    setAutoRefresh(1000);
+	    refresh();
+	  </script>
 </body>
 </html>`, marshalColumns(cols))
 }
@@ -961,6 +1010,15 @@ func validFilterMode(m FilterMode) bool {
 func validSortMode(m SortMode) bool {
 	switch m {
 	case SortByName, SortByStatus, SortByRTT, SortByLastSeen, SortByIP:
+		return true
+	default:
+		return false
+	}
+}
+
+func validUpdateRate(r UpdateRate) bool {
+	switch r {
+	case UpdateRate100ms, UpdateRate1s, UpdateRate5s, UpdateRate30s:
 		return true
 	default:
 		return false

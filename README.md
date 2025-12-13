@@ -25,6 +25,7 @@ mping localhost google.com 8.8.8.8
 **Keyboard Shortcuts:**
 - `↑/↓` or `j/k` - Navigate through hosts
 - `Enter` - Show detailed view for selected host
+- `t` - Run traceroute (in detail view)
 - `f` - Cycle filter: smart (online or seen) → online → offline → all
 - `s` - Cycle sort: name → status → RTT (round-trip time) → last seen → IP
 - `e` - Edit host list (replace hosts while running)

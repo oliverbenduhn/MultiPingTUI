@@ -51,6 +51,35 @@ type StatusServer struct {
 	statsProvider StatsProvider
 	view          ServerView
 	viewMu        sync.RWMutex
+
+	traceMu sync.RWMutex
+	traces  map[string]*webTraceState
+}
+
+type webTraceState struct {
+	running    bool
+	seq        int
+	startedAt  time.Time
+	finishedAt time.Time
+	target     string
+	output     string
+	err        string
+	took       time.Duration
+}
+
+type traceRequest struct {
+	Key string `json:"key"`
+}
+
+type traceResponse struct {
+	Key        string    `json:"key"`
+	Running    bool      `json:"running"`
+	Target     string    `json:"target,omitempty"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
+	FinishedAt time.Time `json:"finished_at,omitempty"`
+	TookMs     int64     `json:"took_ms,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	Output     string    `json:"output,omitempty"`
 }
 
 func StartStatusServer(repo HostRepository, provider StatsProvider, initialView ServerView, port int) (*StatusServer, error) {
@@ -62,6 +91,7 @@ func StartStatusServer(repo HostRepository, provider StatsProvider, initialView 
 		repo:          repo,
 		statsProvider: provider,
 		view:          initialView,
+		traces:        make(map[string]*webTraceState),
 	}
 
 	mux := http.NewServeMux()
@@ -70,6 +100,7 @@ func StartStatusServer(repo HostRepository, provider StatsProvider, initialView 
 	mux.HandleFunc("/json", server.jsonHandler)
 	mux.HandleFunc("/view", server.viewHandler)
 	mux.HandleFunc("/state", server.stateHandler)
+	mux.HandleFunc("/trace", server.traceHandler)
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
 	if err != nil {
@@ -108,6 +139,175 @@ func (s *StatusServer) Stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = s.srv.Shutdown(ctx)
+}
+
+func (s *StatusServer) traceHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Connection", "close")
+
+	switch r.Method {
+	case http.MethodGet:
+		key := strings.TrimSpace(r.URL.Query().Get("key"))
+		if key == "" {
+			http.Error(w, "missing key", http.StatusBadRequest)
+			return
+		}
+		resp := s.snapshotTrace(key)
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+
+	case http.MethodPost:
+		defer r.Body.Close()
+		var req traceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		key := strings.TrimSpace(req.Key)
+		if key == "" {
+			http.Error(w, "missing key", http.StatusBadRequest)
+			return
+		}
+
+		wrapper, ok := s.findWrapperByKey(key)
+		if !ok {
+			http.Error(w, "unknown key", http.StatusNotFound)
+			return
+		}
+
+		stats := s.statsProvider(wrapper)
+		target := strings.TrimSpace(stats.iprepr)
+		if target == "" {
+			target = deriveTraceTarget(wrapper.Host())
+		}
+		if target == "" {
+			http.Error(w, "unable to derive target", http.StatusBadRequest)
+			return
+		}
+
+		seq := s.startTrace(key, target)
+		timeout := 20 * time.Second
+		go func(hostKey string, hostTarget string, hostSeq int) {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			res := runTraceroute(ctx, hostKey, hostTarget, hostSeq)
+			s.finishTrace(res)
+		}(key, target, seq)
+
+		resp := s.snapshotTrace(key)
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+}
+
+func (s *StatusServer) findWrapperByKey(key string) (PingWrapperInterface, bool) {
+	for _, w := range s.repo.GetAll() {
+		if w.Host() == key {
+			return w, true
+		}
+	}
+	return nil, false
+}
+
+func deriveTraceTarget(host string) string {
+	h := strings.TrimSpace(host)
+	if h == "" {
+		return ""
+	}
+	if idx := strings.Index(h, "://"); idx >= 0 {
+		h = h[idx+3:]
+	}
+	// If it's host:port, strip port.
+	if strings.HasPrefix(h, "[") {
+		if hostPart, _, err := net.SplitHostPort(h); err == nil {
+			return strings.Trim(hostPart, "[]")
+		}
+		// Might be a bare IPv6 without port.
+		return strings.Trim(h, "[]")
+	}
+	if hostPart, _, err := net.SplitHostPort(h); err == nil {
+		return hostPart
+	}
+	return h
+}
+
+func (s *StatusServer) getOrCreateTraceState(key string) *webTraceState {
+	s.traceMu.Lock()
+	defer s.traceMu.Unlock()
+	if s.traces == nil {
+		s.traces = make(map[string]*webTraceState)
+	}
+	if st, ok := s.traces[key]; ok {
+		return st
+	}
+	st := &webTraceState{}
+	s.traces[key] = st
+	return st
+}
+
+func (s *StatusServer) startTrace(key, target string) int {
+	st := s.getOrCreateTraceState(key)
+	s.traceMu.Lock()
+	defer s.traceMu.Unlock()
+	st.seq++
+	st.running = true
+	st.startedAt = time.Now()
+	st.finishedAt = time.Time{}
+	st.target = target
+	st.output = ""
+	st.err = ""
+	st.took = 0
+	return st.seq
+}
+
+func (s *StatusServer) finishTrace(res tracerouteResult) {
+	s.traceMu.Lock()
+	defer s.traceMu.Unlock()
+	st, ok := s.traces[res.host]
+	if !ok {
+		return
+	}
+	if res.seq != st.seq {
+		return
+	}
+	st.running = false
+	st.finishedAt = time.Now()
+	st.target = res.target
+	st.output = strings.TrimRight(res.output, "\n")
+	if res.err != nil {
+		st.err = res.err.Error()
+	} else {
+		st.err = ""
+	}
+	st.took = res.took
+}
+
+func (s *StatusServer) snapshotTrace(key string) traceResponse {
+	s.traceMu.RLock()
+	defer s.traceMu.RUnlock()
+	st, ok := s.traces[key]
+	if !ok || st == nil {
+		return traceResponse{Key: key}
+	}
+	resp := traceResponse{
+		Key:        key,
+		Running:    st.running,
+		Target:     st.target,
+		StartedAt:  st.startedAt,
+		FinishedAt: st.finishedAt,
+		Output:     st.output,
+		Error:      st.err,
+	}
+	if st.took > 0 {
+		resp.TookMs = st.took.Milliseconds()
+	}
+	return resp
 }
 
 func (s *StatusServer) jsonHandler(w http.ResponseWriter, _ *http.Request) {
@@ -430,13 +630,17 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       border-radius: 1px;
       transition: all 0.3s ease;
     }
-    .rtt-bar .bar-filled {
+    .rtt-bar .bar-good {
       background: var(--green);
-      animation: pulse 2s ease-in-out infinite;
     }
-    .rtt-bar .bar-partial {
+    .rtt-bar .bar-warn {
       background: var(--yellow);
-      opacity: 0.6;
+    }
+    .rtt-bar .bar-bad {
+      background: var(--red);
+    }
+    .rtt-bar span:not(.bar-empty) {
+      animation: pulse 2s ease-in-out infinite;
     }
     .rtt-bar .bar-empty {
       background: rgba(139, 148, 158, 0.2);
@@ -610,6 +814,66 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       white-space: normal;
       overflow: visible;
     }
+    .detail-section {
+      grid-column: 1 / -1;
+      margin-top: 8px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(240, 246, 252, 0.07);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-width: 0;
+    }
+    .detail-section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-weight: 800;
+      font-size: 12px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .trace-controls {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      appearance: none;
+      border: 1px solid rgba(240, 246, 252, 0.12);
+      background: rgba(88, 166, 255, 0.12);
+      color: var(--text-primary);
+      padding: 6px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .trace-status {
+      color: var(--text-muted);
+      font-size: 13px;
+      white-space: normal;
+      overflow: visible;
+    }
+    pre.trace-output {
+      margin: 0;
+      background: rgba(13, 17, 23, 0.6);
+      border: 1px solid rgba(240, 246, 252, 0.12);
+      border-radius: 10px;
+      padding: 12px;
+      overflow: auto;
+      white-space: pre;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 12.5px;
+      color: var(--text-primary);
+      max-height: 46vh;
+    }
     @media (max-width: 720px) {
       .detail-body {
         grid-template-columns: 1fr;
@@ -702,6 +966,8 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
     let refreshTimer = null;
     let refreshIntervalMs = 1000;
     let selectedKey = null;
+    let traceTimer = null;
+    let lastTrace = null;
 
     const WIDTHS_KEY = 'mping.columnWidths.v1';
     const DEFAULT_WIDTHS = {1: 120, 2: 260, 3: 210, 4: 200, 5: 170, 6: 240};
@@ -821,12 +1087,17 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       const bars = 12;
       const filledCount = Math.min(bars, Math.ceil((rttMs / maxRTT) * bars));
 
+      let colorClass = 'bar-good';
+      if (rttMs > 150) {
+        colorClass = 'bar-bad';
+      } else if (rttMs > 50) {
+        colorClass = 'bar-warn';
+      }
+
       let html = '<div class="rtt-bar">';
       for (let i = 0; i < bars; i++) {
-        if (i < filledCount - 2) {
-          html += '<span class="bar-filled"></span>';
-        } else if (i < filledCount) {
-          html += '<span class="bar-partial"></span>';
+        if (i < filledCount) {
+          html += '<span class="' + colorClass + '"></span>';
         } else {
           html += '<span class="bar-empty"></span>';
         }
@@ -850,43 +1121,81 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
     }
 
     function openDetail(row) {
-      selectedKey = row.key || null;
+      const nextKey = row.key || null;
+      const alreadyOpen = detailOverlay.classList.contains('open');
+      const sameKey = alreadyOpen && selectedKey && nextKey === selectedKey;
+      selectedKey = nextKey;
+
+      if (sameKey) {
+        updateDetailValues(row);
+        return;
+      }
+
+      detailTitle.textContent = row.host || 'Details';
+      detailBody.innerHTML =
+        '<div class="detail-row"><div class="detail-label">Host</div><div class="detail-value" data-field="host"></div></div>' +
+        '<div class="detail-row"><div class="detail-label">IP</div><div class="detail-value mono" data-field="ip"></div></div>' +
+        '<div class="detail-row"><div class="detail-label">Status</div><div class="detail-value" data-field="status"></div></div>' +
+        '<div class="detail-row"><div class="detail-label">RTT</div><div class="detail-value mono" data-field="rtt"></div></div>' +
+        '<div class="detail-row"><div class="detail-label">Last Reply</div><div class="detail-value" data-field="last_reply"></div></div>' +
+        '<div class="detail-row"><div class="detail-label">Last Loss</div><div class="detail-value" data-field="last_loss"></div></div>' +
+        '<div class="detail-row"><div class="detail-label">Online Time</div><div class="detail-value" data-field="online_time"></div></div>' +
+        '<div class="detail-row" data-field-row="error" style="display:none;"><div class="detail-label">Error</div><div class="detail-value error" data-field="error"></div></div>' +
+        '<div class="detail-section">' +
+          '<div class="detail-section-title">' +
+            '<span>Traceroute</span>' +
+            '<div class="trace-controls">' +
+              '<button class="btn" type="button" id="trace-run">Run</button>' +
+              '<button class="btn" type="button" id="trace-refresh">Refresh</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="trace-status" id="trace-status"></div>' +
+          '<pre class="trace-output" id="trace-output"></pre>' +
+        '</div>';
+
+      updateDetailValues(row);
+      detailOverlay.classList.add('open');
+      detailOverlay.setAttribute('aria-hidden', 'false');
+
+      wireTraceControls();
+      startTracePolling();
+    }
+
+    function updateDetailValues(row) {
       detailTitle.textContent = row.host || 'Details';
       const statusText = row.online ? 'ONLINE' : 'OFFLINE';
       const rttText = row.online ? (row.rtt || '-') : '-';
       const lossText = row.last_loss_ago ? (row.last_loss_ago + ' (' + (row.last_loss_duration || '-') + ')') : '-';
 
-      const parts = [
-        ['Host', row.host || '-', ''],
-        ['IP', row.ip || '-', 'mono'],
-        ['Status', statusText, row.online ? '' : ''],
-        ['RTT', rttText, 'mono'],
-        ['Last Reply', row.last_reply || '-', ''],
-        ['Last Loss', lossText, ''],
-        ['Online Time', row.online_time || '-', ''],
-      ];
+      const set = (field, val) => {
+        const el = detailBody.querySelector('[data-field="' + field + '"]');
+        if (!el) return;
+        el.textContent = val == null ? '' : String(val);
+      };
+
+      set('host', row.host || '-');
+      set('ip', row.ip || '-');
+      set('status', statusText);
+      set('rtt', rttText);
+      set('last_reply', row.last_reply || '-');
+      set('last_loss', lossText);
+      set('online_time', row.online_time || '-');
+
+      const errRow = detailBody.querySelector('[data-field-row="error"]');
       if (row.error) {
-        parts.push(['Error', row.error, 'error']);
+        set('error', row.error);
+        if (errRow) errRow.style.display = '';
+      } else {
+        set('error', '');
+        if (errRow) errRow.style.display = 'none';
       }
-
-      detailBody.innerHTML = parts.map(([label, value, cls]) => {
-        const klass = cls ? ('detail-value ' + cls) : 'detail-value';
-        return (
-          '<div class="detail-row">' +
-            '<div class="detail-label">' + escapeHtml(label) + '</div>' +
-            '<div class="' + klass + '">' + escapeHtml(value) + '</div>' +
-          '</div>'
-        );
-      }).join('');
-
-      detailOverlay.classList.add('open');
-      detailOverlay.setAttribute('aria-hidden', 'false');
     }
 
     function closeDetail() {
       detailOverlay.classList.remove('open');
       detailOverlay.setAttribute('aria-hidden', 'true');
       selectedKey = null;
+      stopTracePolling();
     }
 
     detailClose.addEventListener('click', closeDetail);
@@ -896,6 +1205,90 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && detailOverlay.classList.contains('open')) closeDetail();
     });
+
+    function stopTracePolling() {
+      if (traceTimer) {
+        clearInterval(traceTimer);
+        traceTimer = null;
+      }
+      lastTrace = null;
+    }
+
+    function startTracePolling() {
+      stopTracePolling();
+      traceTimer = setInterval(fetchTrace, 1000);
+      fetchTrace();
+    }
+
+    function renderTrace(trace) {
+      const statusEl = document.querySelector('#trace-status');
+      const outEl = document.querySelector('#trace-output');
+      const runBtn = document.querySelector('#trace-run');
+      const refreshBtn = document.querySelector('#trace-refresh');
+      if (!statusEl || !outEl) return;
+
+      if (!trace || !trace.key) {
+        statusEl.textContent = 'No traceroute yet.';
+        outEl.textContent = '';
+        if (runBtn) runBtn.disabled = false;
+        if (refreshBtn) refreshBtn.disabled = false;
+        return;
+      }
+
+      const took = (typeof trace.took_ms === 'number' && trace.took_ms > 0)
+        ? (' · ' + (Math.round(trace.took_ms / 100) / 10) + 's')
+        : '';
+
+      if (trace.running) {
+        statusEl.textContent = 'Running to ' + (trace.target || '-') + '…';
+        if (runBtn) runBtn.disabled = true;
+      } else {
+        if (runBtn) runBtn.disabled = false;
+        if (trace.error) {
+          statusEl.textContent = 'Error: ' + trace.error + (trace.target ? (' (target ' + trace.target + ')') : '') + took;
+        } else if ((trace.output || '').trim() !== '') {
+          statusEl.textContent = 'Target ' + (trace.target || '-') + took;
+        } else {
+          statusEl.textContent = 'No traceroute yet.';
+        }
+      }
+      if (refreshBtn) refreshBtn.disabled = false;
+      outEl.textContent = trace.output || '';
+    }
+
+    async function fetchTrace() {
+      if (!selectedKey || !detailOverlay.classList.contains('open')) return;
+      try {
+        const res = await fetch('/trace?key=' + encodeURIComponent(selectedKey), {cache:'no-store'});
+        const trace = await res.json();
+        lastTrace = trace;
+        if (trace && trace.key === selectedKey) renderTrace(trace);
+      } catch (_) {}
+    }
+
+    async function runTrace() {
+      if (!selectedKey) return;
+      const runBtn = document.querySelector('#trace-run');
+      if (runBtn) runBtn.disabled = true;
+      try {
+        await fetch('/trace', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({key: selectedKey}),
+          cache: 'no-store'
+        });
+      } catch (_) {}
+      await fetchTrace();
+    }
+
+    function wireTraceControls() {
+      const runBtn = document.querySelector('#trace-run');
+      const refreshBtn = document.querySelector('#trace-refresh');
+      if (runBtn) runBtn.onclick = runTrace;
+      if (refreshBtn) refreshBtn.onclick = fetchTrace;
+      if (lastTrace && lastTrace.key === selectedKey) renderTrace(lastTrace);
+      else renderTrace({key: selectedKey});
+    }
 
 	    function rateToMs(rate) {
 	      switch (rate) {
@@ -934,24 +1327,43 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
 
     async function refresh() {
       try {
-	        const res = await fetch('/state', {cache:'no-store', headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}});
-	        const state = await res.json();
-	        const view = state.view || {};
-	        const columns = normalizeCols(view.cols || initialColumns);
-	        renderTableStructure(columns);
-	        renderControls(view);
-	        const desiredInterval = rateToMs(view.rate);
-	        if (desiredInterval !== refreshIntervalMs) {
-	          setAutoRefresh(desiredInterval);
-	        }
+        const res = await fetch('/state', {cache:'no-store', headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}});
+        const state = await res.json();
+        const view = state.view || {};
+        const columns = normalizeCols(view.cols || initialColumns);
+        renderTableStructure(columns);
+        renderControls(view);
+        const desiredInterval = rateToMs(view.rate);
+        if (desiredInterval !== refreshIntervalMs) {
+          setAutoRefresh(desiredInterval);
+        }
 
-	        const data = state.statuses || [];
-	        tbody.innerHTML = '';
+        const data = state.statuses || [];
+
+        // Map existing rows for reuse to prevent flickering
+        const existingRows = new Map();
+        tbody.querySelectorAll('tr').forEach((tr) => {
+          if (tr.dataset.key) existingRows.set(tr.dataset.key, tr);
+        });
+
+        const newKeys = new Set();
 
         for (const row of data) {
-          const tr = document.createElement('tr');
+          const key = row.key;
+          newKeys.add(key);
+
+          let tr = existingRows.get(key);
+          if (!tr) {
+            tr = document.createElement('tr');
+            tr.dataset.key = key;
+          }
+          // Ensure row is in the correct position (append moves it if already exists)
+          tbody.appendChild(tr);
+
           if (!row.online) {
             tr.className = 'offline-row';
+          } else {
+            tr.className = '';
           }
 
           const colValues = {
@@ -965,28 +1377,33 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
             6: row.last_loss_ago ? row.last_loss_ago + ' (' + row.last_loss_duration + ')' : '-'
           };
 
+          let rowHtml = '';
           columns.forEach((col) => {
             const val = colValues[col] ?? '-';
-            const td = document.createElement('td');
 
             if (col === 1) {
-              td.innerHTML = val;
+               rowHtml += '<td>' + val + '</td>';
             } else if (col === 2) {
-              td.className = 'name-cell';
-              td.textContent = val;
-              td.dataset.key = row.key || '';
+               rowHtml += '<td class="name-cell">' + escapeHtml(val) + '</td>';
             } else if (col === 3) {
-              td.className = 'ip-cell';
-              td.textContent = val;
+               rowHtml += '<td class="ip-cell">' + escapeHtml(val) + '</td>';
             } else if (col === 4 && row.online && val !== '-') {
-              td.innerHTML = '<div class="rtt-cell"><span class="rtt-value">' + val + '</span>' + createRTTBar(parseRTT(val)) + '</div>';
+               rowHtml += '<td><div class="rtt-cell"><span class="rtt-value">' + escapeHtml(val) + '</span>' + createRTTBar(parseRTT(val)) + '</div></td>';
             } else {
-              td.textContent = val;
+               rowHtml += '<td>' + escapeHtml(val) + '</td>';
             }
-            tr.appendChild(td);
           });
-          tbody.appendChild(tr);
+
+          // Only update innerHTML if it changed to minimize heavy relayouts
+          if (tr.innerHTML !== rowHtml) {
+            tr.innerHTML = rowHtml;
+          }
         }
+
+        // Remove rows that are no longer in the data
+        existingRows.forEach((tr, key) => {
+          if (!newKeys.has(key)) tr.remove();
+        });
 
         // Keep detail panel updated if it is open.
         if (selectedKey) {
@@ -996,11 +1413,17 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
         syncPill.textContent = 'synced';
         renderUpdated('Connected');
       } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="6" style="color: var(--red); text-align: center; padding: 24px;">⚠ Error loading data</td></tr>';
+        // Only show error if we don't have stale data showing (optional, but safer to leave error logic simple)
+        // For now, if error, we might want to clear or just show overlay.
+        // Keeping simple: if completely failed and empty, show error.
+        if (tbody.children.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="color: var(--red); text-align: center; padding: 24px;">⚠ Error loading data</td></tr>';
+        }
         syncPill.textContent = 'offline';
         renderUpdated('Disconnected');
       }
     }
+
 
     sortEl.addEventListener('change', async () => {
       const sort = Number(sortEl.value);
@@ -1035,7 +1458,9 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
     tbody.addEventListener('click', (e) => {
       const cell = e.target && e.target.closest ? e.target.closest('td.name-cell') : null;
       if (!cell) return;
-      const key = cell.dataset.key;
+      const tr = cell.closest('tr');
+      if (!tr) return;
+      const key = tr.dataset.key;
       if (!key) return;
       // Find the row by key from last rendered DOM: stash row data on the tr via dataset?
       // We don't have it, so request a fresh state quickly and open from that.
@@ -1127,6 +1552,7 @@ func (s *StatusServer) snapshotView() ServerView {
 	copied := ServerView{
 		Filter: s.view.Filter,
 		Sort:   s.view.Sort,
+		Rate:   s.view.Rate,
 		Hidden: make(map[string]bool, len(s.view.Hidden)),
 		Cols:   append([]int{}, s.view.Cols...),
 	}

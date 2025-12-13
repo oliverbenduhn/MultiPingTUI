@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"runtime/debug"
 	"strings"
@@ -63,6 +64,21 @@ type TUIModel struct {
 	statsCacheTime   time.Time          // when stats were last calculated
 	lastTickTime     time.Time          // when last tick happened
 	statusServer     *StatusServer      // optional web status server
+
+	detailHost        string
+	detailTraceScroll int
+	traceStates       map[string]*traceState
+}
+
+type traceState struct {
+	running    bool
+	seq        int
+	startedAt  time.Time
+	finishedAt time.Time
+	target     string
+	output     string
+	err        string
+	took       time.Duration
 }
 
 func NewTUIModel(ps *PingService, repo HostRepository, tw *TransitionWriter, initialFilter FilterMode) *TUIModel {
@@ -83,6 +99,7 @@ func NewTUIModel(ps *PingService, repo HostRepository, tw *TransitionWriter, ini
 		statsCache:       make(map[string]PWStats),
 		statsCacheTime:   time.Time{},
 		lastTickTime:     time.Now(),
+		traceStates:      make(map[string]*traceState),
 	}
 }
 
@@ -96,6 +113,7 @@ type keyMap struct {
 	PageUp      key.Binding
 	PageDown    key.Binding
 	Enter       key.Binding
+	Traceroute  key.Binding
 	Quit        key.Binding
 	FilterCycle key.Binding
 	SortCycle   key.Binding
@@ -126,6 +144,10 @@ var keys = keyMap{
 	Enter: key.NewBinding(
 		key.WithKeys("enter"),
 		key.WithHelp("enter", "details"),
+	),
+	Traceroute: key.NewBinding(
+		key.WithKeys("t"),
+		key.WithHelp("t", "traceroute"),
 	),
 	Quit: key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),
@@ -318,6 +340,25 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Always continue UI ticker at 100ms
 		return m, m.tickCmd()
 
+	case tracerouteResult:
+		state := m.getOrCreateTraceState(msg.host)
+		if msg.seq != state.seq {
+			// Stale result from a previous run.
+			return m, nil
+		}
+
+		state.running = false
+		state.finishedAt = time.Now()
+		state.took = msg.took
+		state.target = msg.target
+		state.output = strings.TrimRight(msg.output, "\n")
+		if msg.err != nil {
+			state.err = msg.err.Error()
+		} else {
+			state.err = ""
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		if m.editingHosts {
 			switch {
@@ -368,8 +409,47 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, keys.Enter):
 			if m.hostList.cursor >= 0 {
 				m.footer.showDetails = !m.footer.showDetails
+				if m.footer.showDetails {
+					if wrapper, ok := m.selectedWrapper(); ok {
+						m.setDetailHost(wrapper.Host())
+					}
+				}
 			}
 			return m, nil
+
+		case key.Matches(msg, keys.Traceroute):
+			if !m.footer.showDetails {
+				return m, nil
+			}
+			wrapper, ok := m.selectedWrapper()
+			if !ok {
+				return m, nil
+			}
+			stats := m.getCachedStats(wrapper)
+			target := strings.TrimSpace(stats.iprepr)
+			if target == "" {
+				target = strings.TrimSpace(wrapper.Host())
+			}
+
+			host := wrapper.Host()
+			m.setDetailHost(host)
+			state := m.getOrCreateTraceState(host)
+			state.seq++
+			state.running = true
+			state.startedAt = time.Now()
+			state.finishedAt = time.Time{}
+			state.target = target
+			state.output = ""
+			state.err = ""
+			m.detailTraceScroll = 0
+
+			seq := state.seq
+			timeout := 20 * time.Second
+			return m, func() tea.Msg {
+				ctx, cancel := context.WithTimeout(context.Background(), timeout)
+				defer cancel()
+				return runTraceroute(ctx, host, target, seq)
+			}
 
 		case key.Matches(msg, keys.Up):
 			filtered := m.hostList.getFilteredWrappers(m.repo.GetAll(), m.getCachedStats)
@@ -380,6 +460,9 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.hostList.cursor--
 				}
 				m.hostList.adjustScroll()
+				if m.footer.showDetails && m.hostList.cursor >= 0 && m.hostList.cursor < len(filtered) {
+					m.setDetailHost(filtered[m.hostList.cursor].Host())
+				}
 			}
 			return m, nil
 
@@ -392,10 +475,17 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.hostList.cursor++
 				}
 				m.hostList.adjustScroll()
+				if m.footer.showDetails && m.hostList.cursor >= 0 && m.hostList.cursor < len(filtered) {
+					m.setDetailHost(filtered[m.hostList.cursor].Host())
+				}
 			}
 			return m, nil
 
 		case key.Matches(msg, keys.PageUp):
+			if m.footer.showDetails {
+				m.scrollTrace(-1)
+				return m, nil
+			}
 			filtered := m.hostList.getFilteredWrappers(m.repo.GetAll(), m.getCachedStats)
 			if len(filtered) > 0 {
 				visibleLines := m.hostList.height - 7
@@ -415,6 +505,10 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case key.Matches(msg, keys.PageDown):
+			if m.footer.showDetails {
+				m.scrollTrace(1)
+				return m, nil
+			}
 			filtered := m.hostList.getFilteredWrappers(m.repo.GetAll(), m.getCachedStats)
 			if len(filtered) > 0 {
 				visibleLines := m.hostList.height - 7
@@ -453,6 +547,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.header.updateRate = nextUpdateRate(m.header.updateRate)
 			m.statusMessage = fmt.Sprintf("Update rate: %s", m.header.getUpdateRateString())
 			// No need to restart any tickers - the time-based calculation handles everything
+			m.pushStatusView()
 			return m, nil
 
 		case key.Matches(msg, keys.HideHost):
@@ -516,6 +611,78 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m *TUIModel) selectedWrapper() (PingWrapperInterface, bool) {
+	filtered := m.hostList.getFilteredWrappers(m.repo.GetAll(), m.getCachedStats)
+	if m.hostList.cursor < 0 || m.hostList.cursor >= len(filtered) {
+		return nil, false
+	}
+	return filtered[m.hostList.cursor], true
+}
+
+func (m *TUIModel) setDetailHost(host string) {
+	if m.detailHost == host {
+		return
+	}
+	m.detailHost = host
+	m.detailTraceScroll = 0
+}
+
+func (m *TUIModel) getOrCreateTraceState(host string) *traceState {
+	if m.traceStates == nil {
+		m.traceStates = make(map[string]*traceState)
+	}
+	if st, ok := m.traceStates[host]; ok {
+		return st
+	}
+	st := &traceState{}
+	m.traceStates[host] = st
+	return st
+}
+
+func (m *TUIModel) scrollTrace(direction int) {
+	wrapper, ok := m.selectedWrapper()
+	if !ok {
+		return
+	}
+	host := wrapper.Host()
+	m.setDetailHost(host)
+
+	st, ok := m.traceStates[host]
+	if !ok || st.output == "" {
+		return
+	}
+
+	lines := strings.Split(st.output, "\n")
+	visible := m.detailTraceVisibleLines()
+	if len(lines) <= visible {
+		m.detailTraceScroll = 0
+		return
+	}
+
+	maxScroll := len(lines) - visible
+	page := visible - 1
+	if page < 1 {
+		page = 1
+	}
+	next := m.detailTraceScroll + direction*page
+	if next < 0 {
+		next = 0
+	}
+	if next > maxScroll {
+		next = maxScroll
+	}
+	m.detailTraceScroll = next
+}
+
+func (m *TUIModel) detailTraceVisibleLines() int {
+	// Roughly: window height minus header/footer + details header lines.
+	visible := m.hostList.height - 10
+	if visible < 5 {
+		visible = 5
+	}
+	return visible
 }
 
 func (m *TUIModel) syncViewFromStatusServer() {
@@ -675,6 +842,55 @@ func (m *TUIModel) renderDetailView(wrapper PingWrapperInterface) string {
 	}
 
 	details.WriteString(fmt.Sprintf("\nOnline time: %s\n", stats.OnlineUptime(time.Now().UnixNano()).Round(time.Second)))
+
+	host := wrapper.Host()
+
+	details.WriteString("\n")
+	details.WriteString(accentStyle.Render("Traceroute"))
+	details.WriteString("\n")
+
+	st, ok := m.traceStates[host]
+	switch {
+	case ok && st.running:
+		details.WriteString(helpStyle.Render(fmt.Sprintf("running to %s… (%s elapsed)  │  press t to restart", st.target, time.Since(st.startedAt).Round(time.Second))))
+		details.WriteString("\n")
+	case ok && st.err != "" && st.output == "":
+		details.WriteString(helpStyle.Render(fmt.Sprintf("failed to run traceroute to %s: %s", st.target, st.err)))
+		details.WriteString("\n")
+	case ok && st.output != "":
+		if st.err != "" {
+			details.WriteString(helpStyle.Render(fmt.Sprintf("target %s  │  finished in %s  │  error: %s", st.target, st.took.Round(time.Second/10), st.err)))
+		} else {
+			details.WriteString(helpStyle.Render(fmt.Sprintf("target %s  │  finished in %s", st.target, st.took.Round(time.Second/10))))
+		}
+		details.WriteString("\n\n")
+
+		lines := strings.Split(st.output, "\n")
+		visible := m.detailTraceVisibleLines()
+		scroll := 0
+		if m.detailHost == host {
+			scroll = m.detailTraceScroll
+			if scroll < 0 {
+				scroll = 0
+			}
+			if scroll > len(lines) {
+				scroll = 0
+			}
+		}
+		end := scroll + visible
+		if end > len(lines) {
+			end = len(lines)
+		}
+		details.WriteString(strings.Join(lines[scroll:end], "\n"))
+		details.WriteString("\n")
+		if len(lines) > visible {
+			details.WriteString(helpStyle.Render(fmt.Sprintf("[lines %d-%d/%d] pgup/pgdn to scroll", scroll+1, end, len(lines))))
+			details.WriteString("\n")
+		}
+	default:
+		details.WriteString(helpStyle.Render("press t to run traceroute"))
+		details.WriteString("\n")
+	}
 
 	return detailStyle.Render(details.String())
 }

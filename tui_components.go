@@ -110,7 +110,7 @@ func (m FooterModel) View() string {
 	var s strings.Builder
 	s.WriteString("\n")
 	if m.showDetails {
-		s.WriteString(helpStyle.Render("esc: back │ q: quit"))
+		s.WriteString(helpStyle.Render("esc: back │ t: traceroute │ pgup/pgdn: scroll │ q: quit"))
 	} else {
 		s.WriteString(helpStyle.Render("↑↓/jk: navigate │ enter: details │ e: edit hosts │ 1-6: toggle columns │ q: quit"))
 		s.WriteString("\n")
@@ -121,17 +121,17 @@ func (m FooterModel) View() string {
 
 // HostListModel handles the list of hosts
 type HostListModel struct {
-	wrappers       []PingWrapperInterface
-	cursor         int
-	scrollOffset   int
-	width          int
-	height         int
-	visibleColumns map[int]bool
-	statsCache     map[string]PWStats
-	filterMode     FilterMode
-	sortMode       SortMode
-	hiddenHosts    map[string]bool
-	cachedWrappers []PingWrapperInterface
+	wrappers         []PingWrapperInterface
+	cursor           int
+	scrollOffset     int
+	width            int
+	height           int
+	visibleColumns   map[int]bool
+	statsCache       map[string]PWStats
+	filterMode       FilterMode
+	sortMode         SortMode
+	hiddenHosts      map[string]bool
+	cachedWrappers   []PingWrapperInterface
 	cacheInvalidated bool
 }
 
@@ -141,11 +141,11 @@ func NewHostListModel() HostListModel {
 		visibleCols[i] = true
 	}
 	return HostListModel{
-		cursor:         -1,
-		visibleColumns: visibleCols,
-		statsCache:     make(map[string]PWStats),
-		hiddenHosts:    make(map[string]bool),
-		sortMode:       SortByIP, // Default sort
+		cursor:           -1,
+		visibleColumns:   visibleCols,
+		statsCache:       make(map[string]PWStats),
+		hiddenHosts:      make(map[string]bool),
+		sortMode:         SortByIP, // Default sort
 		cacheInvalidated: true,
 	}
 }

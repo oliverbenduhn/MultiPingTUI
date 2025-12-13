@@ -311,13 +311,15 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
     table {
       width: 100%%;
       border-collapse: collapse;
-      table-layout: auto;
+      table-layout: fixed;
       min-width: 640px;
     }
     th, td {
       padding: 12px 16px;
       text-align: left;
-      word-break: break-word;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     th {
       background: var(--bg-primary);
@@ -330,6 +332,35 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       top: 0;
       z-index: 10;
       border-bottom: 1px solid rgba(240, 246, 252, 0.1);
+      cursor: default;
+    }
+    th.resizable {
+      position: sticky;
+      padding-right: 22px;
+    }
+    th .resizer {
+      position: absolute;
+      right: 0;
+      top: 0;
+      height: 100%%;
+      width: 10px;
+      cursor: col-resize;
+      user-select: none;
+      touch-action: none;
+    }
+    th .resizer::after {
+      content: '';
+      position: absolute;
+      right: 4px;
+      top: 25%%;
+      width: 2px;
+      height: 50%%;
+      background: rgba(139, 148, 158, 0.35);
+      border-radius: 1px;
+      transition: background 0.15s ease;
+    }
+    th .resizer:hover::after {
+      background: rgba(88, 166, 255, 0.7);
     }
     tbody tr {
       border-bottom: 1px solid rgba(240, 246, 252, 0.05);
@@ -512,6 +543,7 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
 
   <div class="container">
     <table id="status">
+      <colgroup id="colgroup"></colgroup>
       <thead>
         <tr></tr>
       </thead>
@@ -529,16 +561,42 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
     const columnNames = {1:'Status', 2:'Name', 3:'IP Address', 4:'RTT', 5:'Last Reply', 6:'Last Loss'};
     const tbody = document.querySelector('#status tbody');
     const theadRow = document.querySelector('#status thead tr');
+    const colgroup = document.querySelector('#colgroup');
     const updatedEl = document.querySelector('#updated span:last-child');
     const syncPill = document.querySelector('#sync-pill');
     const sortEl = document.querySelector('#sort');
     const colsEl = document.querySelector('#cols');
     const REFRESH_MS = 1000;
 
+    const WIDTHS_KEY = 'mping.columnWidths.v1';
+    const DEFAULT_WIDTHS = {1: 120, 2: 260, 3: 210, 4: 200, 5: 170, 6: 240};
+    const MIN_WIDTH = 80;
+
     function normalizeCols(cols) {
       if (!Array.isArray(cols) || cols.length === 0) return [1,2,3,4,5,6];
       const set = new Set(cols.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n >= 1 && n <= 6));
       return Array.from(set).sort((a,b) => a-b);
+    }
+
+    function loadWidths() {
+      try {
+        const raw = localStorage.getItem(WIDTHS_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        if (parsed && typeof parsed === 'object') return parsed;
+      } catch (_) {}
+      return {};
+    }
+
+    function saveWidths(widths) {
+      try {
+        localStorage.setItem(WIDTHS_KEY, JSON.stringify(widths));
+      } catch (_) {}
+    }
+
+    function getColWidth(widths, col) {
+      const v = Number(widths[col]);
+      if (Number.isFinite(v) && v >= MIN_WIDTH) return v;
+      return DEFAULT_WIDTHS[col] || 160;
     }
 
     function renderControls(view) {
@@ -563,8 +621,45 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       }
     }
 
-    function renderHeader(cols) {
-      theadRow.innerHTML = cols.map(c => '<th>' + columnNames[c] + '</th>').join('');
+    function renderTableStructure(cols) {
+      const widths = loadWidths();
+
+      colgroup.innerHTML = cols.map((c) => '<col data-col="' + c + '" style="width:' + getColWidth(widths, c) + 'px">').join('');
+
+      theadRow.innerHTML = cols.map((c, idx) => {
+        const canResize = idx !== cols.length - 1;
+        const resizer = canResize ? '<span class="resizer" data-col="' + c + '"></span>' : '';
+        return '<th class="' + (canResize ? 'resizable' : '') + '" data-col="' + c + '">' + columnNames[c] + resizer + '</th>';
+      }).join('');
+
+      // Attach resizing handlers for this freshly-rendered header
+      theadRow.querySelectorAll('.resizer').forEach((handle) => {
+        handle.addEventListener('pointerdown', (e) => {
+          e.preventDefault();
+          const col = Number(handle.dataset.col);
+          const widthsNow = loadWidths();
+          const startX = e.clientX;
+          const startW = getColWidth(widthsNow, col);
+
+          const colEl = colgroup.querySelector('col[data-col="' + col + '"]');
+          if (!colEl) return;
+
+          const onMove = (ev) => {
+            const next = Math.max(MIN_WIDTH, Math.round(startW + (ev.clientX - startX)));
+            colEl.style.width = next + 'px';
+            widthsNow[col] = next;
+          };
+
+          const onUp = () => {
+            document.removeEventListener('pointermove', onMove);
+            document.removeEventListener('pointerup', onUp);
+            saveWidths(widthsNow);
+          };
+
+          document.addEventListener('pointermove', onMove);
+          document.addEventListener('pointerup', onUp);
+        });
+      });
     }
 
     function parseRTT(rttStr) {
@@ -627,7 +722,7 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
         const state = await res.json();
         const view = state.view || {};
         const columns = normalizeCols(view.cols || initialColumns);
-        renderHeader(columns);
+        renderTableStructure(columns);
         renderControls(view);
 
         const data = state.statuses || [];

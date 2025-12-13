@@ -1,6 +1,8 @@
 dist
 .vscode
 _misc
+.tools/
+.cache/
 multiping
 multiping.exe
 multipingtui

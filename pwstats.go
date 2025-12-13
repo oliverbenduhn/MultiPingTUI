@@ -18,6 +18,8 @@ type PWStats struct {
 	has_ever_received      bool
 	state_initialized      bool
 	skip_next_up_highlight bool
+	has_ever_been_online   bool
+	loss_reference_recv    int64
 	last_up_transition     int64
 	startup_time           int64
 	last_compute           int64
@@ -27,6 +29,8 @@ type PWStats struct {
 	hrepr                  string
 	iprepr                 string
 }
+
+var nowFunc = time.Now
 
 // GetHostRepr returns the host representation (display name)
 func (p *PWStats) GetHostRepr() string {
@@ -39,7 +43,7 @@ func (p *PWStats) SetHostRepr(hrepr string) {
 }
 
 func (p *PWStats) ComputeState(timeout_threshold int64) {
-	now := time.Now().UnixNano()
+	now := nowFunc().UnixNano()
 	if p.startup_time == 0 {
 		p.startup_time = now
 	}
@@ -49,15 +53,29 @@ func (p *PWStats) ComputeState(timeout_threshold int64) {
 
 	prevState := p.state
 	prevSeen := p.state_initialized
+	prevEverOnline := p.has_ever_been_online
 
-	p.last_seen_nano = now - p.lastrecv
-	new_state := p.last_seen_nano < timeout_threshold
-	// TODO: Algo to review completely
+	if p.lastrecv > 0 {
+		delta := now - p.lastrecv
+		if delta < 0 {
+			delta = 0
+		}
+		p.last_seen_nano = delta
+	} else {
+		delta := now - p.startup_time
+		if delta < 0 {
+			delta = 0
+		}
+		p.last_seen_nano = delta
+	}
+	new_state := p.lastrecv > 0 && p.last_seen_nano < timeout_threshold
 
 	if !prevSeen {
 		// First observation initializes baseline without marking transitions or highlights
 		p.state_initialized = true
-		p.skip_next_up_highlight = true
+		// Only skip highlighting when we start offline (first "down→up" is just initial acquisition).
+		p.skip_next_up_highlight = !new_state
+		p.has_ever_been_online = new_state
 		p.state = new_state
 		p.last_compute = now
 		return
@@ -65,7 +83,18 @@ func (p *PWStats) ComputeState(timeout_threshold int64) {
 
 	// accumulate uptime only while state was online since last compute
 	if prevState {
-		p.uptime_nano += now - p.last_compute
+		elapsed := now - p.last_compute
+		if elapsed > 0 {
+			p.uptime_nano += elapsed
+		}
+	}
+
+	if prevState && !new_state {
+		// Host went down (up→down transition). Keep the last successful receive time so we can
+		// compute the outage duration even though lastrecv will be overwritten on recovery.
+		if p.lastrecv > 0 {
+			p.loss_reference_recv = p.lastrecv
+		}
 	}
 
 	if !prevState && new_state {
@@ -77,10 +106,12 @@ func (p *PWStats) ComputeState(timeout_threshold int64) {
 			// Normal transition - highlight it blue for 20 seconds
 			p.last_up_transition = now
 		}
-		// Always record the loss event (timestamp and duration)
-		p.last_loss_nano = now
-		// Calculate outage duration: from last successful receive until now
-		p.last_loss_duration = now - p.lastrecv
+		// Record loss event only if we have been online before and we have a valid reference receive.
+		if prevEverOnline && p.loss_reference_recv > 0 && now > p.loss_reference_recv {
+			p.last_loss_nano = now
+			p.last_loss_duration = now - p.loss_reference_recv
+		}
+		p.loss_reference_recv = 0
 	}
 	if p.state != new_state {
 		var sb strings.Builder
@@ -117,6 +148,9 @@ func (p *PWStats) ComputeState(timeout_threshold int64) {
 	}
 
 	p.state = new_state
+	if new_state {
+		p.has_ever_been_online = true
+	}
 	p.last_compute = now
 }
 

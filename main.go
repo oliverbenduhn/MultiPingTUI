@@ -61,6 +61,11 @@ func main() {
 		config.Tui = false
 	}
 
+	userSettings, settingsErr := LoadUserSettings()
+	if settingsErr != nil && DebugMode {
+		fmt.Fprintf(os.Stderr, "DEBUG: failed to load user settings: %v\n", settingsErr)
+	}
+
 	if config.PprofAddr != "" {
 		go startPprof(config.PprofAddr)
 	}
@@ -75,6 +80,11 @@ func main() {
 		rawHosts = append(rawHosts, fileHosts...)
 	}
 	rawHosts = append(rawHosts, config.Args...)
+
+	// If no hosts were provided, fall back to persisted settings (TUI mode).
+	if len(rawHosts) == 0 && config.Tui {
+		rawHosts = append([]string{}, userSettings.Hosts...)
+	}
 	var hosts []string
 
 	for _, arg := range rawHosts {
@@ -149,11 +159,16 @@ func main() {
 	ps := NewPingService(repo, options, transition_writer)
 	ps.InitHosts(hosts)
 
+	globalStats := NewGlobalStatistics()
+
 	// TUI mode (default, interactive)
 	if config.Tui && !config.Quiet {
 		initialFilter := determineInitialFilter(config.OnlyOnline, config.OnlyOffline)
+		if !config.OnlyOnline && !config.OnlyOffline && validFilterMode(userSettings.View.Filter) {
+			initialFilter = userSettings.View.Filter
+		}
 		ps.Start()
-		err := RunTUI(ps, repo, transition_writer, initialFilter, config.WebPort)
+		err := RunTUI(ps, repo, transition_writer, initialFilter, config.WebPort, globalStats, userSettings, rawHosts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 			os.Exit(1)

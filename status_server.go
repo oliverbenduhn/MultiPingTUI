@@ -54,6 +54,7 @@ type StatusServer struct {
 
 	traceMu sync.RWMutex
 	traces  map[string]*webTraceState
+	globalStats *GlobalStatistics
 }
 
 type webTraceState struct {
@@ -82,7 +83,7 @@ type traceResponse struct {
 	Output     string    `json:"output,omitempty"`
 }
 
-func StartStatusServer(repo HostRepository, provider StatsProvider, initialView ServerView, port int) (*StatusServer, error) {
+func StartStatusServer(repo HostRepository, provider StatsProvider, initialView ServerView, port int, globalStats *GlobalStatistics) (*StatusServer, error) {
 	if port <= 0 {
 		return nil, nil
 	}
@@ -92,10 +93,13 @@ func StartStatusServer(repo HostRepository, provider StatsProvider, initialView 
 		statsProvider: provider,
 		view:          initialView,
 		traces:        make(map[string]*webTraceState),
+		globalStats:   globalStats,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", server.htmlHandler)
+	mux.HandleFunc("/dashboard", server.dashboardHtmlHandler)
+	mux.HandleFunc("/api/dashboard", server.dashboardApiHandler)
 	mux.HandleFunc("/text", server.textHandler)
 	mux.HandleFunc("/json", server.jsonHandler)
 	mux.HandleFunc("/view", server.viewHandler)
@@ -440,6 +444,26 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       padding-bottom: 16px;
       border-bottom: 1px solid var(--bg-panel);
     }
+    .nav-links {
+      display: flex;
+      gap: 20px;
+      margin-top: 12px;
+    }
+    .nav-link {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 14px;
+      padding-bottom: 4px;
+      border-bottom: 2px solid transparent;
+    }
+    .nav-link:hover {
+      color: var(--text-primary);
+    }
+    .nav-link.active {
+      color: var(--text-primary);
+      border-bottom-color: var(--blue);
+    }
     h1 {
       font-size: 24px;
       font-weight: 600;
@@ -453,6 +477,7 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       gap: 12px 18px;
       align-items: center;
     }
+    /* ... rest of CSS ... */
     .control-group {
       display: flex;
       gap: 10px;
@@ -884,7 +909,11 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
 <body>
   <header>
     <h1>🌐 MultiPingTUI Live Status</h1>
-    <p class="muted">Auto-refreshes every second · <code>/state</code> includes view+data · <code>/json</code> data only · <code>/text</code> plain text</p>
+    <div class="nav-links">
+      <a href="/" class="nav-link active">Live List</a>
+      <a href="/dashboard" class="nav-link">Dashboard</a>
+    </div>
+    <p class="muted" style="margin-top:12px">Auto-refreshes every second · <code>/state</code> includes view+data · <code>/json</code> data only · <code>/text</code> plain text</p>
 	    <div class="controls">
 	      <div class="control-group">
 	        <label for="filter">Filter</label>
@@ -1325,105 +1354,123 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
       return normalizeCols(cols);
     }
 
-    async function refresh() {
-      try {
-        const res = await fetch('/state', {cache:'no-store', headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}});
-        const state = await res.json();
-        const view = state.view || {};
-        const columns = normalizeCols(view.cols || initialColumns);
-        renderTableStructure(columns);
-        renderControls(view);
-        const desiredInterval = rateToMs(view.rate);
-        if (desiredInterval !== refreshIntervalMs) {
-          setAutoRefresh(desiredInterval);
-        }
-
-        const data = state.statuses || [];
-
-        // Map existing rows for reuse to prevent flickering
-        const existingRows = new Map();
-        tbody.querySelectorAll('tr').forEach((tr) => {
-          if (tr.dataset.key) existingRows.set(tr.dataset.key, tr);
-        });
-
-        const newKeys = new Set();
-
-        for (const row of data) {
-          const key = row.key;
-          newKeys.add(key);
-
-          let tr = existingRows.get(key);
-          if (!tr) {
-            tr = document.createElement('tr');
-            tr.dataset.key = key;
-          }
-          // Ensure row is in the correct position (append moves it if already exists)
-          tbody.appendChild(tr);
-
-          if (!row.online) {
-            tr.className = 'offline-row';
-          } else {
-            tr.className = '';
-          }
-
-          const colValues = {
-            1: row.online
-              ? '<div class="status-cell"><span class="status-badge online">● Online</span></div>'
-              : '<div class="status-cell"><span class="status-badge offline">○ Offline</span></div>',
-            2: row.host || '-',
-            3: row.ip || '-',
-            4: row.online ? (row.rtt || '-') : '-',
-            5: row.last_reply || '-',
-            6: row.last_loss_ago ? row.last_loss_ago + ' (' + row.last_loss_duration + ')' : '-'
-          };
-
-          let rowHtml = '';
-          columns.forEach((col) => {
-            const val = colValues[col] ?? '-';
-
-            if (col === 1) {
-               rowHtml += '<td>' + val + '</td>';
-            } else if (col === 2) {
-               rowHtml += '<td class="name-cell">' + escapeHtml(val) + '</td>';
-            } else if (col === 3) {
-               rowHtml += '<td class="ip-cell">' + escapeHtml(val) + '</td>';
-            } else if (col === 4 && row.online && val !== '-') {
-               rowHtml += '<td><div class="rtt-cell"><span class="rtt-value">' + escapeHtml(val) + '</span>' + createRTTBar(parseRTT(val)) + '</div></td>';
-            } else {
-               rowHtml += '<td>' + escapeHtml(val) + '</td>';
+        async function refresh() {
+          try {
+            const res = await fetch('/state', {cache:'no-store', headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}});
+            const state = await res.json();
+            const view = state.view || {};
+            const columns = normalizeCols(view.cols || initialColumns);
+            renderTableStructure(columns);
+            renderControls(view);
+            const desiredInterval = rateToMs(view.rate);
+            if (desiredInterval !== refreshIntervalMs) {
+              setAutoRefresh(desiredInterval);
             }
-          });
-
-          // Only update innerHTML if it changed to minimize heavy relayouts
-          if (tr.innerHTML !== rowHtml) {
-            tr.innerHTML = rowHtml;
+    
+            const data = state.statuses || [];
+            
+            const existingRows = new Map();
+            tbody.querySelectorAll('tr').forEach((tr) => {
+              if (tr.dataset.key) existingRows.set(tr.dataset.key, tr);
+            });
+            
+            const newKeys = new Set();
+    
+            for (const row of data) {
+              const key = row.key;
+              newKeys.add(key);
+              
+              let tr = existingRows.get(key);
+              if (!tr) {
+                tr = document.createElement('tr');
+                tr.dataset.key = key;
+                // Create cells initially
+                columns.forEach(col => {
+                    const td = document.createElement('td');
+                    td.dataset.col = col;
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+              } else {
+                 // Check if columns changed
+                 const currentCells = tr.querySelectorAll('td');
+                 if (currentCells.length !== columns.length) {
+                     tr.innerHTML = '';
+                     columns.forEach(col => {
+                        const td = document.createElement('td');
+                        td.dataset.col = col;
+                        tr.appendChild(td);
+                     });
+                 }
+              }
+    
+              if (!row.online) {
+                tr.className = 'offline-row';
+              } else {
+                tr.className = '';
+              }
+    
+              const cells = tr.querySelectorAll('td');
+              
+              columns.forEach((col, idx) => {
+                const td = cells[idx];
+                if (!td) return; // Should not happen given logic above
+    
+                let newVal = '';
+                let newClass = '';
+                
+                // Calculate new content
+                if (col === 1) {
+                     newVal = row.online
+                      ? '<div class="status-cell"><span class="status-badge online">● Online</span></div>'
+                      : '<div class="status-cell"><span class="status-badge offline">○ Offline</span></div>';
+                } else if (col === 2) {
+                     newClass = 'name-cell';
+                     newVal = escapeHtml(row.host || '-');
+                } else if (col === 3) {
+                     newClass = 'ip-cell';
+                     newVal = escapeHtml(row.ip || '-');
+                } else if (col === 4) {
+                     if (row.online && (row.rtt || '-') !== '-') {
+                        newVal = '<div class="rtt-cell"><span class="rtt-value">' + escapeHtml(row.rtt) + '</span>' + createRTTBar(parseRTT(row.rtt)) + '</div>';
+                     } else {
+                        newVal = '-';
+                     }
+                } else if (col === 5) {
+                     newVal = escapeHtml(row.last_reply || '-');
+                } else if (col === 6) {
+                     newVal = row.last_loss_ago ? escapeHtml(row.last_loss_ago + ' (' + row.last_loss_duration + ')') : '-';
+                }
+                
+                // Apply updates only if changed
+                if (td.className !== newClass) td.className = newClass;
+                
+                // For simple text columns, use textContent to be faster, but we have HTML in col 1 and 4.
+                // To be safe and simple, we use innerHTML comparison.
+                if (td.innerHTML !== newVal) {
+                    td.innerHTML = newVal;
+                }
+              });
+            }
+    
+            existingRows.forEach((tr, key) => {
+              if (!newKeys.has(key)) tr.remove();
+            });
+    
+            if (selectedKey) {
+              const match = data.find((r) => r.key === selectedKey);
+              if (match) openDetail(match);
+            }
+            syncPill.textContent = 'synced';
+            renderUpdated('Connected');
+          } catch (err) {
+            if (tbody.children.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="color: var(--red); text-align: center; padding: 24px;">⚠ Error loading data</td></tr>';
+            }
+            syncPill.textContent = 'offline';
+            renderUpdated('Disconnected');
           }
         }
-
-        // Remove rows that are no longer in the data
-        existingRows.forEach((tr, key) => {
-          if (!newKeys.has(key)) tr.remove();
-        });
-
-        // Keep detail panel updated if it is open.
-        if (selectedKey) {
-          const match = data.find((r) => r.key === selectedKey);
-          if (match) openDetail(match);
-        }
-        syncPill.textContent = 'synced';
-        renderUpdated('Connected');
-      } catch (err) {
-        // Only show error if we don't have stale data showing (optional, but safer to leave error logic simple)
-        // For now, if error, we might want to clear or just show overlay.
-        // Keeping simple: if completely failed and empty, show error.
-        if (tbody.children.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" style="color: var(--red); text-align: center; padding: 24px;">⚠ Error loading data</td></tr>';
-        }
-        syncPill.textContent = 'offline';
-        renderUpdated('Disconnected');
-      }
-    }
-
 
     sortEl.addEventListener('change', async () => {
       const sort = Number(sortEl.value);
@@ -1792,4 +1839,341 @@ func (s *StatusServer) filterAndSort(wrappers []PingWrapperInterface, view Serve
 	}
 
 	return filtered
+}
+
+type DashboardStats struct {
+	Total             int               `json:"total"`
+	Online            int               `json:"online"`
+	Offline           int               `json:"offline"`
+	NeverSeen         int               `json:"never_seen"`
+	Uptime            string            `json:"uptime"`
+	AvgRTT            string            `json:"avg_rtt"`
+	HealthPercent     float64           `json:"health_percent"`
+	RecentTransitions []TransitionEvent `json:"recent_transitions"`
+	TopOffline        []HostStatus      `json:"top_offline"`
+	TopRTT            []HostStatus      `json:"top_rtt"`
+	RTTDist           []RTTBucket       `json:"rtt_dist"`
+}
+
+type RTTBucket struct {
+	Label string `json:"label"`
+	Count int    `json:"count"`
+}
+
+func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, _ *http.Request) {
+	wrappers := s.repo.GetAll()
+	view := s.snapshotView()
+	
+	visible := make([]PingWrapperInterface, 0, len(wrappers))
+	for _, w := range wrappers {
+		if !view.Hidden[w.Host()] {
+			visible = append(visible, w)
+		}
+	}
+
+	total := len(visible)
+	online := 0
+	offline := 0
+	neverSeen := 0
+	var totalRTT time.Duration
+	
+	buckets := []struct {
+		label string
+		count int
+		max   time.Duration 
+	}{
+		{"<5ms", 0, 5 * time.Millisecond},
+		{"5-20ms", 0, 20 * time.Millisecond},
+		{"20-50ms", 0, 50 * time.Millisecond},
+		{"50-100ms", 0, 100 * time.Millisecond},
+		{">100ms", 0, 100 * time.Hour},
+	}
+
+	offlineList := make([]HostStatus, 0)
+	rttList := make([]HostStatus, 0)
+	now := time.Now()
+
+	for _, wrapper := range visible {
+		st := s.statsProvider(wrapper)
+		isOnline := st.state && st.error_message == ""
+		seen := st.has_ever_received
+
+		if isOnline {
+			online++
+			if st.lastrtt > 0 {
+				totalRTT += st.lastrtt
+				for i := range buckets {
+					if st.lastrtt < buckets[i].max {
+						buckets[i].count++
+						break
+					}
+				}
+			}
+		} else {
+			offline++
+		}
+		if !seen {
+			neverSeen++
+		}
+		
+		hs := HostStatus{
+			Host: wrapper.Host(),
+			IP: st.iprepr,
+			Online: isOnline,
+			RTT: st.lastrtt_as_string,
+			Error: st.error_message,
+			LastLossAgo: "-",
+		}
+		if st.lastrecv > 0 {
+			hs.LastReply = time.Duration(st.last_seen_nano).Round(time.Second).String() + " ago"
+		} else {
+			hs.LastReply = "never"
+		}
+		
+		if st.last_loss_nano > 0 {
+			hs.LastLossAgo = fmt.Sprintf("%s ago", time.Duration(now.UnixNano()-st.last_loss_nano).Round(time.Second))
+			hs.LastLossDuration = time.Duration(st.last_loss_duration).Round(time.Second / 10).String()
+		}
+
+		if !isOnline {
+			offlineList = append(offlineList, hs)
+		} else if st.lastrtt > 0 {
+			rttList = append(rttList, hs)
+		}
+	}
+
+	sort.Slice(offlineList, func(i, j int) bool {
+		return offlineList[i].Host < offlineList[j].Host
+	})
+	if len(offlineList) > 5 {
+		offlineList = offlineList[:5]
+	}
+	
+	sort.Slice(rttList, func(i, j int) bool {
+		return rttList[i].RTT > rttList[j].RTT 
+	})
+	if len(rttList) > 5 {
+		rttList = rttList[:5]
+	}
+
+	health := 0.0
+	if total > 0 {
+		health = (float64(online) / float64(total)) * 100
+	}
+
+	avgRTT := "N/A"
+	if online > 0 {
+		avgRTT = (totalRTT / time.Duration(online)).Round(time.Microsecond).String()
+	}
+
+	uptime := "N/A"
+	var transitions []TransitionEvent
+	if s.globalStats != nil {
+		uptime = time.Since(s.globalStats.GetStartTime()).Round(time.Second).String()
+		transitions = s.globalStats.GetTransitions(20)
+	}
+
+	dist := make([]RTTBucket, len(buckets))
+	for i, b := range buckets {
+		dist[i] = RTTBucket{Label: b.label, Count: b.count}
+	}
+
+	resp := DashboardStats{
+		Total: total,
+		Online: online,
+		Offline: offline,
+		NeverSeen: neverSeen,
+		Uptime: uptime,
+		AvgRTT: avgRTT,
+		HealthPercent: health,
+		RecentTransitions: transitions,
+		TopOffline: offlineList,
+		TopRTT: rttList,
+		RTTDist: dist,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Connection", "close")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *StatusServer) dashboardHtmlHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Connection", "close")
+	fmt.Fprintf(w, `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>MultiPingTUI Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg-primary: #0D1117;
+      --bg-panel: #161B22;
+      --text-primary: #C9D1D9;
+      --text-muted: #8B949E;
+      --green: #3FB950;
+      --yellow: #E2B93D;
+      --red: #F85149;
+      --blue: #58A6FF;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      padding: 24px;
+      line-height: 1.5;
+    }
+    header {
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--bg-panel);
+    }
+    h1 { font-size: 24px; margin-bottom: 8px; margin-top:0; }
+    .nav-links { display: flex; gap: 20px; margin-top: 12px; }
+    .nav-link { color: var(--text-muted); text-decoration: none; font-weight: 600; padding-bottom: 4px; border-bottom: 2px solid transparent; font-size: 14px; }
+    .nav-link:hover { color: var(--text-primary); }
+    .nav-link.active { color: var(--text-primary); border-bottom-color: var(--blue); }
+    
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+    .card { background: var(--bg-panel); border: 1px solid rgba(240,246,252,0.1); border-radius: 8px; padding: 16px; }
+    .card h2 { font-size: 12px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 16px; margin-top: 0; font-weight: 700; letter-spacing: 0.05em; }
+    
+    .stat-row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; }
+    .stat-val { font-weight: 600; font-family: ui-monospace, SFMono-Regular, monospace; }
+    
+    .health-bar { height: 8px; background: rgba(255,255,255,0.1); border-radius: 4px; overflow: hidden; margin-top: 12px; }
+    .health-fill { height: 100%%; background: var(--green); transition: width 0.5s ease; }
+    
+    .list-item { display: flex; justify-content: space-between; align-items: center; font-size: 13px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+    .list-item:last-child { border-bottom: none; }
+    .badge { padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-right: 8px; }
+    .badge.up { background: rgba(63, 185, 80, 0.2); color: var(--green); }
+    .badge.down { background: rgba(248, 81, 73, 0.2); color: var(--red); }
+    
+    @media (max-width: 600px) {
+        body { padding: 16px; }
+        .grid { grid-template-columns: 1fr; }
+        .card[style*="span 2"] { grid-column: span 1 !important; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🌐 MultiPingTUI Dashboard</h1>
+    <div class="nav-links">
+      <a href="/" class="nav-link">Live List</a>
+      <a href="/dashboard" class="nav-link active">Dashboard</a>
+    </div>
+  </header>
+  
+  <div class="grid">
+    <div class="card">
+      <h2>Network Health</h2>
+      <div class="stat-row"><span>Online</span><span class="stat-val" id="online">-</span></div>
+      <div class="stat-row"><span>Total</span><span class="stat-val" id="total">-</span></div>
+      <div class="stat-row"><span>Percentage</span><span class="stat-val" id="pct">-</span></div>
+      <div class="health-bar"><div class="health-fill" id="health-fill" style="width: 0%%"></div></div>
+    </div>
+    
+    <div class="card">
+      <h2>Global Stats</h2>
+      <div class="stat-row"><span>Uptime</span><span class="stat-val" id="uptime">-</span></div>
+      <div class="stat-row"><span>Avg RTT</span><span class="stat-val" id="avg-rtt">-</span></div>
+      <div class="stat-row"><span>Never Seen</span><span class="stat-val" id="never">-</span></div>
+    </div>
+    
+    <div class="card">
+      <h2>RTT Distribution</h2>
+      <div id="rtt-dist"></div>
+    </div>
+
+    <div class="card" style="grid-column: span 2">
+      <h2>Recent Transitions</h2>
+      <div id="transitions"></div>
+    </div>
+    
+    <div class="card">
+      <h2>Top Offline</h2>
+      <div id="top-offline"></div>
+    </div>
+    
+    <div class="card">
+      <h2>Highest RTT</h2>
+      <div id="top-rtt"></div>
+    </div>
+  </div>
+
+  <script>
+    async function refresh() {
+      try {
+        const res = await fetch('/api/dashboard', {cache:'no-store'});
+        const data = await res.json();
+        
+        document.getElementById('online').textContent = data.online;
+        document.getElementById('total').textContent = data.total;
+        document.getElementById('pct').textContent = data.health_percent.toFixed(1) + '%%';
+        const fill = document.getElementById('health-fill');
+        fill.style.width = data.health_percent + '%%';
+        
+        if (data.health_percent > 90) fill.style.background = 'var(--green)';
+        else if (data.health_percent > 50) fill.style.background = 'var(--yellow)';
+        else fill.style.background = 'var(--red)';
+        
+        document.getElementById('uptime').textContent = data.uptime;
+        document.getElementById('avg-rtt').textContent = data.avg_rtt;
+        document.getElementById('never').textContent = data.never_seen;
+        
+        const transEl = document.getElementById('transitions');
+        transEl.innerHTML = '';
+        (data.recent_transitions || []).slice(0, 10).forEach(t => {
+          const div = document.createElement('div');
+          div.className = 'list-item';
+          const type = t.State ? '<span class="badge up">UP</span>' : '<span class="badge down">DOWN</span>';
+          const time = new Date(t.When).toLocaleTimeString();
+          const dur = (t.Duration / 1e9).toFixed(1) + 's';
+          div.innerHTML = '<div>' + type + ' <b>' + t.Host + '</b></div><div style="color:var(--text-muted)">' + time + ' (' + dur + ')</div>';
+          transEl.appendChild(div);
+        });
+        
+        const rttDistEl = document.getElementById('rtt-dist');
+        rttDistEl.innerHTML = '';
+        (data.rtt_dist || []).forEach(b => {
+           if(b.count > 0 || true) { // Show all buckets? maybe just non-zero
+             if (b.count === 0) return;
+             const div = document.createElement('div');
+             div.className = 'stat-row';
+             div.innerHTML = '<span>' + b.label + '</span><span class="stat-val">' + b.count + '</span>';
+             rttDistEl.appendChild(div);
+           }
+        });
+        
+        const offEl = document.getElementById('top-offline');
+        offEl.innerHTML = '';
+        (data.top_offline || []).forEach(h => {
+            const div = document.createElement('div');
+            div.className = 'list-item';
+            div.innerHTML = '<span>' + h.host + '</span><span class="stat-val" style="color:var(--text-muted)">' + h.last_reply + '</span>';
+            offEl.appendChild(div);
+        });
+        
+        const rttListEl = document.getElementById('top-rtt');
+        rttListEl.innerHTML = '';
+        (data.top_rtt || []).forEach(h => {
+            const div = document.createElement('div');
+            div.className = 'list-item';
+            div.innerHTML = '<span>' + h.host + '</span><span class="stat-val">' + h.rtt + '</span>';
+            rttListEl.appendChild(div);
+        });
+
+      } catch(e) { console.error(e); }
+    }
+    setInterval(refresh, 2000);
+    refresh();
+  </script>
+</body>
+</html>`)
 }

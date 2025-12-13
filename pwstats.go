@@ -3,8 +3,59 @@ package main
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"time"
 )
+
+type TransitionEvent struct {
+	Host     string
+	IP       string
+	State    bool // true=up, false=down
+	When     time.Time
+	Duration time.Duration
+}
+
+type GlobalStatistics struct {
+	mu                sync.RWMutex
+	StartTime         time.Time
+	RecentTransitions []TransitionEvent
+}
+
+func NewGlobalStatistics() *GlobalStatistics {
+	return &GlobalStatistics{
+		StartTime:         time.Now(),
+		RecentTransitions: make([]TransitionEvent, 0, 50),
+	}
+}
+
+func (s *GlobalStatistics) AddTransition(event TransitionEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Prepend
+	s.RecentTransitions = append([]TransitionEvent{event}, s.RecentTransitions...)
+	// Keep last 50
+	if len(s.RecentTransitions) > 50 {
+		s.RecentTransitions = s.RecentTransitions[:50]
+	}
+}
+
+func (s *GlobalStatistics) GetTransitions(limit int) []TransitionEvent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 || limit > len(s.RecentTransitions) {
+		limit = len(s.RecentTransitions)
+	}
+	// Copy to avoid races
+	out := make([]TransitionEvent, limit)
+	copy(out, s.RecentTransitions[:limit])
+	return out
+}
+
+func (s *GlobalStatistics) GetStartTime() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.StartTime
+}
 
 type PWStats struct {
 	lastsent               int64

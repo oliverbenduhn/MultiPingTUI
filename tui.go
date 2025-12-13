@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -68,7 +69,21 @@ type TUIModel struct {
 	detailHost        string
 	detailTraceScroll int
 	traceStates       map[string]*traceState
+
+	viewMode tuiViewMode
+
+	globalStats *GlobalStatistics
+
+	hostsRaw []string
 }
+
+type tuiViewMode int
+
+const (
+	viewList tuiViewMode = iota
+	viewDetails
+	viewDashboard
+)
 
 type traceState struct {
 	running    bool
@@ -81,7 +96,7 @@ type traceState struct {
 	took       time.Duration
 }
 
-func NewTUIModel(ps *PingService, repo HostRepository, tw *TransitionWriter, initialFilter FilterMode) *TUIModel {
+func NewTUIModel(ps *PingService, repo HostRepository, tw *TransitionWriter, initialFilter FilterMode, globalStats *GlobalStatistics) *TUIModel {
 	if initialFilter != FilterOnline && initialFilter != FilterOffline && initialFilter != FilterSmart {
 		initialFilter = FilterSmart
 	}
@@ -100,6 +115,9 @@ func NewTUIModel(ps *PingService, repo HostRepository, tw *TransitionWriter, ini
 		statsCacheTime:   time.Time{},
 		lastTickTime:     time.Now(),
 		traceStates:      make(map[string]*traceState),
+		viewMode:         viewList,
+		globalStats:      globalStats,
+		hostsRaw:         nil,
 	}
 }
 
@@ -114,6 +132,7 @@ type keyMap struct {
 	PageDown    key.Binding
 	Enter       key.Binding
 	Traceroute  key.Binding
+	Dashboard   key.Binding
 	Quit        key.Binding
 	FilterCycle key.Binding
 	SortCycle   key.Binding
@@ -148,6 +167,10 @@ var keys = keyMap{
 	Traceroute: key.NewBinding(
 		key.WithKeys("t"),
 		key.WithHelp("t", "traceroute"),
+	),
+	Dashboard: key.NewBinding(
+		key.WithKeys("d"),
+		key.WithHelp("d", "dashboard"),
 	),
 	Quit: key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),
@@ -267,9 +290,46 @@ func (m *TUIModel) getTickDuration() time.Duration {
 func (m *TUIModel) updateStatsCache() {
 	m.statsCacheMu.Lock()
 	defer m.statsCacheMu.Unlock()
-	m.statsCacheTime = time.Now()
+	now := time.Now()
+	m.statsCacheTime = now
+
 	for _, wrapper := range m.repo.GetAll() {
 		stats := wrapper.CalcStats(2 * 1e9)
+
+		// Detect state transitions for dashboard
+		if old, ok := m.statsCache[wrapper.Host()]; ok {
+			// Basic state change
+			// Note: PWStats.ComputeState handles its own internal transitions logic, but
+			// we want to capture it here for the UI event log.
+			if old.state != stats.state {
+				// Only record if it wasn't just initialized (avoid spam on startup)
+				if old.has_ever_received || old.state_initialized {
+					evt := TransitionEvent{
+						Host:  wrapper.Host(),
+						IP:    stats.iprepr,
+						State: stats.state,
+						When:  now,
+					}
+					if stats.state {
+						// Came UP. Duration was how long it was DOWN (approx)
+						// stats.last_loss_duration is computed in PWStats upon recovery
+						evt.Duration = time.Duration(stats.last_loss_duration)
+					} else {
+						// Went DOWN. Duration was how long it was UP.
+						// stats.last_up_transition tells us when it last came up.
+						if stats.last_up_transition > 0 {
+							upTime := now.UnixNano() - stats.last_up_transition
+							if upTime > 0 {
+								evt.Duration = time.Duration(upTime)
+							}
+						}
+					}
+
+					m.globalStats.AddTransition(evt)
+				}
+			}
+		}
+
 		m.statsCache[wrapper.Host()] = stats
 	}
 }
@@ -292,13 +352,14 @@ func (m *TUIModel) getCachedStats(wrapper PingWrapperInterface) PWStats {
 
 func (m *TUIModel) applyHostInput() {
 	raw := strings.TrimSpace(m.hostInput)
+	m.hostsRaw = strings.Fields(raw)
 	hosts := parseHostsInput(raw)
 	m.ps.ReplaceHosts(hosts)
 	m.hostList.cursor = -1
 	m.hostList.scrollOffset = 0
 	m.hostList.filterMode = FilterAll
 	m.header.filterMode = FilterAll
-	m.footer.showDetails = false
+	m.setViewMode(viewList)
 	if len(hosts) == 0 {
 		m.statusMessage = "Cleared hosts; no targets configured."
 	} else {
@@ -401,24 +462,34 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case key.Matches(msg, keys.Escape):
-			if m.footer.showDetails {
-				m.footer.showDetails = false
+			if m.viewMode != viewList {
+				m.setViewMode(viewList)
 			}
 			return m, nil
 
 		case key.Matches(msg, keys.Enter):
-			if m.hostList.cursor >= 0 {
-				m.footer.showDetails = !m.footer.showDetails
-				if m.footer.showDetails {
-					if wrapper, ok := m.selectedWrapper(); ok {
-						m.setDetailHost(wrapper.Host())
-					}
+			if m.viewMode == viewList && m.hostList.cursor >= 0 {
+				m.setViewMode(viewDetails)
+				if wrapper, ok := m.selectedWrapper(); ok {
+					m.setDetailHost(wrapper.Host())
 				}
+				return m, nil
+			}
+			if m.viewMode != viewList {
+				m.setViewMode(viewList)
+			}
+			return m, nil
+
+		case key.Matches(msg, keys.Dashboard):
+			if m.viewMode == viewDashboard {
+				m.setViewMode(viewList)
+			} else {
+				m.setViewMode(viewDashboard)
 			}
 			return m, nil
 
 		case key.Matches(msg, keys.Traceroute):
-			if !m.footer.showDetails {
+			if m.viewMode != viewDetails {
 				return m, nil
 			}
 			wrapper, ok := m.selectedWrapper()
@@ -460,7 +531,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.hostList.cursor--
 				}
 				m.hostList.adjustScroll()
-				if m.footer.showDetails && m.hostList.cursor >= 0 && m.hostList.cursor < len(filtered) {
+				if m.viewMode == viewDetails && m.hostList.cursor >= 0 && m.hostList.cursor < len(filtered) {
 					m.setDetailHost(filtered[m.hostList.cursor].Host())
 				}
 			}
@@ -475,14 +546,14 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.hostList.cursor++
 				}
 				m.hostList.adjustScroll()
-				if m.footer.showDetails && m.hostList.cursor >= 0 && m.hostList.cursor < len(filtered) {
+				if m.viewMode == viewDetails && m.hostList.cursor >= 0 && m.hostList.cursor < len(filtered) {
 					m.setDetailHost(filtered[m.hostList.cursor].Host())
 				}
 			}
 			return m, nil
 
 		case key.Matches(msg, keys.PageUp):
-			if m.footer.showDetails {
+			if m.viewMode == viewDetails {
 				m.scrollTrace(-1)
 				return m, nil
 			}
@@ -505,7 +576,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case key.Matches(msg, keys.PageDown):
-			if m.footer.showDetails {
+			if m.viewMode == viewDetails {
 				m.scrollTrace(1)
 				return m, nil
 			}
@@ -551,7 +622,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case key.Matches(msg, keys.HideHost):
-			if m.hostList.cursor >= 0 && !m.footer.showDetails {
+			if m.viewMode == viewList && m.hostList.cursor >= 0 {
 				filtered := m.hostList.getFilteredWrappers(m.repo.GetAll(), m.getCachedStats)
 				if m.hostList.cursor < len(filtered) {
 					hostToHide := filtered[m.hostList.cursor].Host()
@@ -581,6 +652,9 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case key.Matches(msg, keys.EditHosts):
+			if m.viewMode != viewList {
+				return m, nil
+			}
 			m.editingHosts = true
 			m.statusMessage = "Edit hosts: one per line, Enter=apply, Esc=cancel, Ctrl+L=clear, Ctrl+N=new line."
 			var b strings.Builder
@@ -596,6 +670,9 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			// Handle number keys 1-6 for column toggling
 			if len(msg.String()) == 1 && msg.String() >= "1" && msg.String() <= "6" {
+				if m.viewMode != viewList {
+					return m, nil
+				}
 				colNum := int(msg.String()[0] - '0')
 				m.hostList.visibleColumns[colNum] = !m.hostList.visibleColumns[colNum]
 				colName := m.hostList.getColumnName(colNum)
@@ -611,6 +688,18 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m *TUIModel) setViewMode(mode tuiViewMode) {
+	m.viewMode = mode
+	switch mode {
+	case viewDetails:
+		m.footer.mode = FooterDetails
+	case viewDashboard:
+		m.footer.mode = FooterDashboard
+	default:
+		m.footer.mode = FooterList
+	}
 }
 
 func (m *TUIModel) selectedWrapper() (PingWrapperInterface, bool) {
@@ -785,11 +874,16 @@ func (m *TUIModel) View() string {
 	// Get filtered and sorted wrappers
 	filtered := m.hostList.getFilteredWrappers(m.repo.GetAll(), m.getCachedStats)
 
-	if m.footer.showDetails && m.hostList.cursor >= 0 && m.hostList.cursor < len(filtered) {
-		// Show detail view
-		s.WriteString(m.renderDetailView(filtered[m.hostList.cursor]))
-	} else {
-		// Show list view
+	switch m.viewMode {
+	case viewDashboard:
+		s.WriteString(m.renderDashboardView())
+	case viewDetails:
+		if m.hostList.cursor >= 0 && m.hostList.cursor < len(filtered) {
+			s.WriteString(m.renderDetailView(filtered[m.hostList.cursor]))
+		} else {
+			s.WriteString(m.hostList.renderListView(filtered, m.getCachedStats))
+		}
+	default:
 		s.WriteString(m.hostList.renderListView(filtered, m.getCachedStats))
 	}
 
@@ -895,6 +989,257 @@ func (m *TUIModel) renderDetailView(wrapper PingWrapperInterface) string {
 	return detailStyle.Render(details.String())
 }
 
+func (m *TUIModel) renderDashboardView() string {
+	type entry struct {
+		host     string
+		ip       string
+		rtt      string
+		ago      string
+		err      string
+		seen     bool
+		online   bool
+		lossNano int64
+		rttVal   time.Duration
+	}
+
+	all := m.repo.GetAll()
+	hidden := 0
+	visibleWrappers := make([]PingWrapperInterface, 0, len(all))
+	for _, w := range all {
+		if m.hostList.hiddenHosts[w.Host()] {
+			hidden++
+			continue
+		}
+		visibleWrappers = append(visibleWrappers, w)
+	}
+
+	filtered := m.hostList.getFilteredWrappers(all, m.getCachedStats)
+
+	countOnline := 0
+	countOffline := 0
+	countNever := 0
+	var totalRTT time.Duration
+
+	offlineEntries := make([]entry, 0, len(visibleWrappers))
+	hotRTT := make([]entry, 0, len(visibleWrappers))
+
+	// RTT Distribution Buckets
+	buckets := []struct {
+		label string
+		count int
+		max   time.Duration // exclusive upper bound
+	}{
+		{"<5ms", 0, 5 * time.Millisecond},
+		{"5-20ms", 0, 20 * time.Millisecond},
+		{"20-50ms", 0, 50 * time.Millisecond},
+		{"50-100ms", 0, 100 * time.Millisecond},
+		{">100ms", 0, 100 * time.Hour}, // catch-all
+	}
+
+	for _, w := range visibleWrappers {
+		st := m.getCachedStats(w)
+		online := st.state && st.error_message == ""
+		seen := st.has_ever_received
+
+		if online {
+			countOnline++
+			if st.lastrtt > 0 {
+				totalRTT += st.lastrtt
+				// Bucket logic
+				for i := range buckets {
+					if st.lastrtt < buckets[i].max {
+						buckets[i].count++
+						break
+					}
+				}
+			}
+		} else {
+			countOffline++
+		}
+		if !seen {
+			countNever++
+		}
+
+		ip := st.iprepr
+		if ip == "" {
+			ip = "-"
+		}
+
+		var ago string
+		if st.lastrecv > 0 {
+			ago = time.Duration(st.last_seen_nano).Round(time.Second).String() + " ago"
+		} else {
+			ago = "never"
+		}
+
+		e := entry{
+			host:     w.Host(),
+			ip:       ip,
+			rtt:      st.lastrtt_as_string,
+			ago:      ago,
+			err:      st.error_message,
+			seen:     seen,
+			online:   online,
+			lossNano: st.last_loss_nano,
+			rttVal:   st.lastrtt,
+		}
+
+		if !online {
+			offlineEntries = append(offlineEntries, e)
+		} else if st.lastrtt > 0 {
+			hotRTT = append(hotRTT, e)
+		}
+	}
+
+	sort.SliceStable(offlineEntries, func(i, j int) bool {
+		li, lj := offlineEntries[i].lossNano, offlineEntries[j].lossNano
+		if li != lj {
+			return li > lj
+		}
+		if offlineEntries[i].seen != offlineEntries[j].seen {
+			return offlineEntries[i].seen
+		}
+		return offlineEntries[i].host < offlineEntries[j].host
+	})
+
+	sort.SliceStable(hotRTT, func(i, j int) bool {
+		if hotRTT[i].rttVal != hotRTT[j].rttVal {
+			return hotRTT[i].rttVal > hotRTT[j].rttVal
+		}
+		return hotRTT[i].host < hotRTT[j].host
+	})
+
+	var b strings.Builder
+	b.WriteString(accentStyle.Render("Dashboard"))
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat("═", 60))
+	b.WriteString("\n\n")
+
+	// Network Health Bar
+	total := len(visibleWrappers)
+	pct := 0.0
+	if total > 0 {
+		pct = (float64(countOnline) / float64(total)) * 100
+	}
+	barWidth := 30
+	filled := 0
+	if total > 0 {
+		filled = int((float64(countOnline) / float64(total)) * float64(barWidth))
+	}
+	bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled) + "]"
+
+	healthColor := offlineStyle
+	if pct > 90 {
+		healthColor = onlineStyle
+	} else if pct > 50 {
+		healthColor = accentStyle
+	}
+
+	b.WriteString(fmt.Sprintf("Network Health: %s %s", healthColor.Render(bar), healthColor.Render(fmt.Sprintf("%.1f%% (%d/%d)", pct, countOnline, total))))
+	b.WriteString("\n\n")
+
+	// Global Stats
+	uptime := time.Since(m.globalStats.GetStartTime()).Round(time.Second)
+	avgRTT := "N/A"
+	if countOnline > 0 {
+		avgRTT = (totalRTT / time.Duration(countOnline)).Round(time.Microsecond).String()
+	}
+
+	b.WriteString(fmt.Sprintf("Total: %-5d │ Online: %-4d │ Offline: %-4d │ Never seen: %d\n", total, countOnline, countOffline, countNever))
+	b.WriteString(fmt.Sprintf("Last tick: %s │ Uptime: %-8s │ Avg RTT: %s", time.Since(m.lastTickTime).Round(time.Second/10), uptime, avgRTT))
+	b.WriteString("\n\n")
+
+	b.WriteString(helpStyle.Render(fmt.Sprintf("Current view (after filter): %d hosts", len(filtered))))
+	b.WriteString("\n\n")
+
+	// Recent Transitions
+	recentTransitions := m.globalStats.GetTransitions(5)
+	if len(recentTransitions) > 0 {
+		b.WriteString(accentStyle.Render("Recent Transitions (last 5)"))
+		b.WriteString("\n")
+		for _, evt := range recentTransitions {
+			timeStr := evt.When.Format("15:04:05")
+			if evt.State {
+				// Came UP
+				durStr := ""
+				if evt.Duration > 0 {
+					durStr = fmt.Sprintf(" (down for %s)", evt.Duration.Round(time.Second))
+				}
+				b.WriteString(fmt.Sprintf("  %s %s up   at %s%s\n", onlineStyle.Render("⬆"), evt.Host, timeStr, durStr))
+			} else {
+				// Went DOWN
+				durStr := ""
+				if evt.Duration > 0 {
+					durStr = fmt.Sprintf(" (was up for %s)", evt.Duration.Round(time.Second))
+				}
+				b.WriteString(fmt.Sprintf("  %s %s down at %s%s\n", offlineStyle.Render("⬇"), evt.Host, timeStr, durStr))
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// Offline Top 5
+	if len(offlineEntries) > 0 {
+		b.WriteString(offlineStyle.Render("Offline (top 5 by last seen)"))
+		b.WriteString("\n")
+		limit := 5
+		if len(offlineEntries) < limit {
+			limit = len(offlineEntries)
+		}
+		for i := 0; i < limit; i++ {
+			e := offlineEntries[i]
+			line := fmt.Sprintf("  - %-15s last seen: %s", e.host, e.ago)
+			if e.err != "" {
+				// truncate error if too long
+				errShort := e.err
+				if len(errShort) > 30 {
+					errShort = errShort[:27] + "..."
+				}
+				line += fmt.Sprintf(" (err: %s)", errShort)
+			}
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// Highest RTT Top 5
+	if len(hotRTT) > 0 {
+		b.WriteString(accentStyle.Render("Highest RTT (top 5)"))
+		b.WriteString("\n")
+		limit := 5
+		if len(hotRTT) < limit {
+			limit = len(hotRTT)
+		}
+		for i := 0; i < limit; i++ {
+			e := hotRTT[i]
+			rtt := e.rtt
+			if rtt == "" {
+				rtt = "-"
+			}
+			// Calc deviation from avg?
+			b.WriteString(fmt.Sprintf("  - %-15s rtt: %s\n", e.host, rtt))
+		}
+		b.WriteString("\n")
+	}
+
+	// RTT Distribution
+	if countOnline > 0 {
+		b.WriteString(accentStyle.Render("Response Time Distribution"))
+		b.WriteString("\n")
+		var distParts []string
+		for _, bucket := range buckets {
+			if bucket.count > 0 {
+				distParts = append(distParts, fmt.Sprintf("%s: %d", bucket.label, bucket.count))
+			}
+		}
+		b.WriteString("  " + strings.Join(distParts, " │ "))
+		b.WriteString("\n")
+	}
+
+	return detailStyle.Render(strings.TrimRight(b.String(), "\n"))
+}
+
 func (m *TUIModel) pushStatusView() {
 	if m.statusServer == nil {
 		return
@@ -934,7 +1279,7 @@ func (m *TUIModel) getRemainingTime() string {
 }
 
 // RunTUI starts the TUI interface with an initial filter mode applied
-func RunTUI(ps *PingService, repo HostRepository, tw *TransitionWriter, initialFilter FilterMode, webPort int) (finalErr error) {
+func RunTUI(ps *PingService, repo HostRepository, tw *TransitionWriter, initialFilter FilterMode, webPort int, globalStats *GlobalStatistics, initialSettings UserSettings, initialHostsRaw []string) (finalErr error) {
 	// Early panic protection before any terminal manipulation
 	defer func() {
 		if r := recover(); r != nil {
@@ -989,7 +1334,9 @@ func RunTUI(ps *PingService, repo HostRepository, tw *TransitionWriter, initialF
 		return fmt.Errorf("timeout waiting for wrappers to start (60s)")
 	}
 
-	model := NewTUIModel(ps, repo, tw, initialFilter)
+	model := NewTUIModel(ps, repo, tw, initialFilter, globalStats)
+	model.hostsRaw = append([]string{}, initialHostsRaw...)
+	applyUserSettingsToModel(model, initialSettings)
 	var statusServer *StatusServer
 	if webPort > 0 {
 		initialView := ServerView{
@@ -1000,7 +1347,7 @@ func RunTUI(ps *PingService, repo HostRepository, tw *TransitionWriter, initialF
 			Cols:   visibleColumnsList(model.hostList.visibleColumns),
 		}
 		var err error
-		statusServer, err = StartStatusServer(repo, model.getCachedStats, initialView, webPort)
+		statusServer, err = StartStatusServer(repo, model.getCachedStats, initialView, webPort, globalStats)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to start status server on port %d: %v\n", webPort, err)
 		} else {
@@ -1030,6 +1377,59 @@ func RunTUI(ps *PingService, repo HostRepository, tw *TransitionWriter, initialF
 		}
 	}()
 
-	_, err := p.Run()
-	return err
+	finalModel, runErr := p.Run()
+	if tm, ok := finalModel.(*TUIModel); ok {
+		_ = SaveUserSettings(userSettingsFromModel(tm))
+	}
+	return runErr
+}
+
+func applyUserSettingsToModel(m *TUIModel, settings UserSettings) {
+	if validSortMode(settings.View.Sort) {
+		m.hostList.sortMode = settings.View.Sort
+		m.header.sortMode = settings.View.Sort
+	}
+	if validUpdateRate(settings.View.Rate) {
+		m.header.updateRate = settings.View.Rate
+	}
+	if settings.View.Hidden != nil {
+		m.hostList.hiddenHosts = cloneHiddenHosts(settings.View.Hidden)
+	}
+	if settings.View.Cols != nil {
+		for i := 1; i <= 6; i++ {
+			m.hostList.visibleColumns[i] = false
+		}
+		for _, c := range settings.View.Cols {
+			if c >= 1 && c <= 6 {
+				m.hostList.visibleColumns[c] = true
+			}
+		}
+		// If cols empty, treat as "all visible"
+		if len(settings.View.Cols) == 0 {
+			for i := 1; i <= 6; i++ {
+				m.hostList.visibleColumns[i] = true
+			}
+		}
+	}
+	m.hostList.cacheInvalidated = true
+}
+
+func userSettingsFromModel(m *TUIModel) UserSettings {
+	var out UserSettings
+	if len(m.hostsRaw) > 0 {
+		out.Hosts = append([]string{}, m.hostsRaw...)
+	} else {
+		// fallback (may be expanded)
+		for _, w := range m.repo.GetAll() {
+			out.Hosts = append(out.Hosts, w.Host())
+		}
+	}
+	out.View = UserViewSettings{
+		Filter: m.hostList.filterMode,
+		Sort:   m.hostList.sortMode,
+		Rate:   m.header.updateRate,
+		Cols:   visibleColumnsList(m.hostList.visibleColumns),
+		Hidden: cloneHiddenHosts(m.hostList.hiddenHosts),
+	}
+	return out
 }

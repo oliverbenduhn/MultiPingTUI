@@ -98,21 +98,32 @@ func (m HeaderModel) getUpdateRateString() string {
 
 // FooterModel handles the bottom help bar
 type FooterModel struct {
-	width       int
-	showDetails bool
+	width int
+	mode  FooterMode
 }
 
+type FooterMode int
+
+const (
+	FooterList FooterMode = iota
+	FooterDetails
+	FooterDashboard
+)
+
 func NewFooterModel() FooterModel {
-	return FooterModel{}
+	return FooterModel{mode: FooterList}
 }
 
 func (m FooterModel) View() string {
 	var s strings.Builder
 	s.WriteString("\n")
-	if m.showDetails {
-		s.WriteString(helpStyle.Render("esc: back │ t: traceroute │ pgup/pgdn: scroll │ q: quit"))
-	} else {
-		s.WriteString(helpStyle.Render("↑↓/jk: navigate │ enter: details │ e: edit hosts │ 1-6: toggle columns │ q: quit"))
+	switch m.mode {
+	case FooterDetails:
+		s.WriteString(helpStyle.Render("esc: back │ t: traceroute │ pgup/pgdn: scroll │ d: dashboard │ q: quit"))
+	case FooterDashboard:
+		s.WriteString(helpStyle.Render("esc: back │ d: back │ q: quit"))
+	default:
+		s.WriteString(helpStyle.Render("↑↓/jk: navigate │ enter: details │ d: dashboard │ e: edit hosts │ 1-6: toggle columns │ q: quit"))
 		s.WriteString("\n")
 		s.WriteString(helpStyle.Render("f: cycle filters (smart/online/offline/all) │ s: cycle sort (name/status/rtt/last/ip) │ r: cycle rate (100ms/1s/5s/30s)"))
 	}

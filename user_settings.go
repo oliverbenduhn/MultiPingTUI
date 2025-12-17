@@ -31,7 +31,7 @@ func DefaultUserSettings() UserSettings {
 		View: UserViewSettings{
 			Filter: FilterSmart,
 			Sort:   SortByIP,
-			Rate:   UpdateRate100ms,
+			Rate:   UpdateRate1s,
 			Cols:   []int{1, 2, 3, 4, 5, 6},
 			Hidden: map[string]bool{},
 		},

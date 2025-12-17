@@ -79,6 +79,7 @@ type PWStats struct {
 	error_message          string
 	hrepr                  string
 	iprepr                 string
+	adaptive_interval      bool
 }
 
 var nowFunc = time.Now
@@ -214,4 +215,23 @@ func (p PWStats) OnlineUptime(now int64) time.Duration {
 		total = 0
 	}
 	return time.Duration(total)
+}
+
+// GetPingInterval returns the appropriate ping interval based on host history.
+// Hosts that have never been online are pinged less frequently to save resources.
+func (p *PWStats) GetPingInterval() time.Duration {
+	if !p.adaptive_interval {
+		return time.Second // default interval when adaptive mode is disabled
+	}
+
+	if p.has_ever_been_online {
+		return time.Second // normal interval for hosts that have been seen online
+	}
+
+	return 10 * time.Second // slower interval for hosts never seen online
+}
+
+// EnableAdaptiveInterval enables adaptive ping intervals for this host
+func (p *PWStats) EnableAdaptiveInterval() {
+	p.adaptive_interval = true
 }

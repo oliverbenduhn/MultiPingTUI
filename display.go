@@ -56,7 +56,7 @@ func (d *Display) Update() {
 	}
 
 	for _, wrapper := range d.repo.GetAll() {
-		stats := wrapper.CalcStats(2 * 1e9)
+		stats := wrapper.CalcStats(TimeoutThresholdNS)
 
 		isOnline := stats.state && stats.error_message == ""
 
@@ -76,7 +76,7 @@ func (d *Display) Update() {
 		sb.WriteString(fmt.Sprintf(d.host_format_string, displayName))
 		if stats.error_message != "" {
 			sb.WriteString(bold_red.Sprintf("❌ %v", stats.error_message))
-		} else if stats.last_seen_nano > 2*1e9 {
+		} else if stats.last_seen_nano > TimeoutThresholdNS {
 			if stats.lastrecv == 0 {
 				sb.WriteString(bold_red.Sprintf("❌ never had reply"))
 			} else {

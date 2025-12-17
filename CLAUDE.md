@@ -311,6 +311,18 @@ When scanning large subnets (e.g., /24 = 254 hosts), several optimizations preve
    - Reduces clutter when scanning large subnets with many unused IPs
    - Can be toggled to show all hosts
 
+5. **Adaptive Ping Intervals** (`-adaptive` flag, auto-enabled for subnets)
+   - **Auto-enabled** when CIDR subnets are detected (e.g., `192.168.1.0/24`)
+   - Hosts never seen online are pinged every 10 seconds (vs 1 second normally)
+   - Once a host responds, interval switches to 1 second automatically
+   - Significantly reduces CPU, network traffic, and system calls for large subnets
+   - Implemented in:
+     - `main.go:161-167` - Auto-detection logic when CIDR subnet is expanded
+     - `PWStats.GetPingInterval()` - Returns appropriate interval based on `has_ever_been_online`
+     - `ProbingWrapper.onSend()` - Dynamically adjusts `pinger.Interval` every 5 seconds
+     - `TCPPingWrapper` main loop - Resets ticker interval every 5 seconds
+   - Enabled via `config.AdaptiveInterval` (set by `-adaptive` flag or auto-enabled for subnets)
+
 ### Troubleshooting Slow Startup
 
 If startup is slow on your local subnet:

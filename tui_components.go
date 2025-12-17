@@ -18,7 +18,7 @@ type HeaderModel struct {
 
 func NewHeaderModel() HeaderModel {
 	return HeaderModel{
-		updateRate: UpdateRate100ms,
+		updateRate: UpdateRate1s,
 	}
 }
 

@@ -23,6 +23,7 @@ type Config struct {
 	Debug             bool
 	NoDNS             bool
 	EditConfig        bool
+	AdaptiveInterval  bool
 	Args              []string
 }
 
@@ -47,6 +48,7 @@ func LoadConfig() *Config {
 	flag.BoolVar(&c.Debug, "debug", false, "enable debug output")
 	flag.BoolVar(&c.NoDNS, "no-dns", false, "skip reverse DNS lookups (faster startup for large subnets)")
 	flag.BoolVar(&c.EditConfig, "edit-config", false, "open the config editor (~/.config/mping/config.yaml) and exit")
+	flag.BoolVar(&c.AdaptiveInterval, "adaptive", false, "use adaptive ping intervals (auto-enabled for subnets; slower for hosts never seen online)")
 
 	flag.Usage = usage
 	flag.Parse()

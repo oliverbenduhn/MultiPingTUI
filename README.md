@@ -126,6 +126,26 @@ mping 192.168.1.0/24
 
 Use filtering (`o` key) in TUI mode to quickly see which hosts are online.
 
+### Adaptive ping intervals
+
+When monitoring large subnets with many offline hosts, adaptive intervals are **automatically enabled** to reduce resource usage:
+
+```bash
+# Adaptive mode is auto-enabled for CIDR subnets
+mping 192.168.1.0/24
+
+# Can also be explicitly enabled for individual hosts
+mping -adaptive host1 host2 host3
+```
+
+With adaptive intervals enabled:
+- Hosts that have **never been online** are pinged every **10 seconds**
+- Hosts that have **been seen online** are pinged every **1 second** (normal rate)
+
+This significantly reduces CPU, network traffic, and file descriptor usage when scanning large subnets where most IPs are unused. The interval automatically speeds up to 1 second as soon as a host responds for the first time.
+
+**Auto-detection:** Adaptive mode is automatically enabled whenever you scan a CIDR subnet (e.g., `192.168.1.0/24`). You can still use the `-adaptive` flag to enable it for regular host lists.
+
 ### Once mode
 
 Use `-once` to ping each target once and exit, useful for scripting:
@@ -194,11 +214,18 @@ Based on: https://github.com/babs/multiping
 
 ## Building
 
+Requirements: Go 1.22+ and a standard build toolchain. All dependencies are vendored.
+
 ```bash
-# Standard build
+# Clone and build locally
+git clone https://github.com/oliverbenduhn/MultiPingTUI.git
+cd MultiPingTUI
 go build -o mping
 
-# Build with release script (cross-platform, includes version info)
+# Optional: ensure vendored modules are up to date
+go mod vendor
+
+# Cross-build and package (Linux/Windows, version metadata)
 ./release.sh
 ```
 

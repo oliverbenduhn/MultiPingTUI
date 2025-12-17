@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	probing "github.com/prometheus-community/pro-bing"
 )
 
 var Version = "v1.1.0"
@@ -18,6 +20,7 @@ var BuildTimestamp = "1970-01-01T00:00:00"
 var Builder = "go version go1.xx.y os/platform"
 var DebugMode = false
 var SkipDNS = false
+var TimeoutThresholdNS int64 = int64(2 * time.Second)
 
 // Options struct is replaced by Config in config.go, but we need to keep Options for compatibility
 // with WrapperHolder.InitHosts signature if we don't change it.
@@ -44,6 +47,7 @@ type Options struct {
 	hostfile            *string
 	webPort             *int
 	pprofAddr           *string
+	adaptiveInterval    *bool
 }
 
 func main() {
@@ -59,6 +63,22 @@ func main() {
 
 	if config.NoTui {
 		config.Tui = false
+	}
+
+	// Auto-fallback: if pure Go ping likely lacks permissions (unprivileged user),
+	// try a quick probe to detect "permission denied" and switch to system ping (-s).
+	// This avoids showing everything as offline when raw ICMP is blocked.
+	if !config.System && !config.Privileged && !probePureGoAllowed() {
+		fmt.Fprintf(os.Stderr, "permission denied for raw ICMP; falling back to system ping (-s). Use -privileged or setcap to enable pure Go ping.\n")
+		config.System = true
+	}
+
+	// System ping is slower and can be scheduled irregularly when many hosts are probed in parallel.
+	// Use a more forgiving timeout threshold in that case to avoid false "offline" flaps.
+	if config.System {
+		TimeoutThresholdNS = int64(5 * time.Second)
+	} else {
+		TimeoutThresholdNS = int64(2 * time.Second)
 	}
 
 	// If mping is started without any hosts and there is no config yet, create a commented default.
@@ -121,6 +141,7 @@ func main() {
 		}
 	}
 	var hosts []string
+	hasSubnet := false
 
 	for _, arg := range rawHosts {
 		// Try to expand as CIDR
@@ -130,9 +151,18 @@ func main() {
 				fmt.Fprintf(os.Stderr, "DEBUG: Expanded %s to %d IPs\n", arg, len(ips))
 			}
 			hosts = append(hosts, ips...)
+			hasSubnet = true
 		} else {
 			// Not a CIDR, treat as single host
 			hosts = append(hosts, arg)
+		}
+	}
+
+	// Auto-enable adaptive interval when scanning subnets (unless explicitly disabled)
+	if hasSubnet && !config.AdaptiveInterval {
+		config.AdaptiveInterval = true
+		if DebugMode {
+			fmt.Fprintf(os.Stderr, "DEBUG: Auto-enabled adaptive interval mode (subnet detected)\n")
 		}
 	}
 
@@ -187,6 +217,7 @@ func main() {
 		hostfile:            &config.HostFile,
 		webPort:             &config.WebPort,
 		pprofAddr:           &config.PprofAddr,
+		adaptiveInterval:    &config.AdaptiveInterval,
 	}
 
 	// Initialize Repository and Service
@@ -270,6 +301,25 @@ func determineInitialFilter(onlyOnline, onlyOffline bool) FilterMode {
 	default:
 		return FilterAll
 	}
+}
+
+// probePureGoAllowed returns false if a one-off pure Go ping fails due to permissions.
+func probePureGoAllowed() bool {
+	pinger, err := probing.NewPinger("127.0.0.1")
+	if err != nil {
+		return true // don't block if we can't construct
+	}
+	pinger.Count = 1
+	pinger.Timeout = 500 * time.Millisecond
+	pinger.Interval = 100 * time.Millisecond
+	pinger.SetPrivileged(false)
+	if err := pinger.Run(); err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "permission") || strings.Contains(msg, "operation not permitted") {
+			return false
+		}
+	}
+	return true
 }
 
 func usage() {

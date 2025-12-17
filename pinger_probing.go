@@ -12,14 +12,16 @@ import (
 )
 
 type ProbingWrapper struct {
-	host       string
-	ip         *net.IPAddr
-	hstring    string
-	pinger     *probing.Pinger
-	size       int
-	stats      *PWStats
-	privileged bool
-	mu         sync.RWMutex
+	host              string
+	ip                *net.IPAddr
+	hstring           string
+	pinger            *probing.Pinger
+	size              int
+	stats             *PWStats
+	privileged        bool
+	mu                sync.RWMutex
+	lastPingTime      time.Time
+	lastIntervalCheck time.Time
 }
 
 func (w *ProbingWrapper) Start() {
@@ -39,6 +41,14 @@ func (w *ProbingWrapper) Start() {
 	w.pinger.OnDuplicateRecv = w.onDuplicateRecv
 	w.pinger.Size = w.size
 	w.pinger.Debug = DebugMode
+
+	// Set initial interval based on adaptive mode
+	if w.stats.adaptive_interval {
+		w.pinger.Interval = w.stats.GetPingInterval()
+		w.lastIntervalCheck = time.Now()
+	} else {
+		w.pinger.Interval = time.Second
+	}
 	if runtime.GOOS == "linux" {
 		w.pinger.SetDoNotFragment(true)
 	}
@@ -75,7 +85,21 @@ func (w *ProbingWrapper) Stop() {
 func (w *ProbingWrapper) onSend(pkt *probing.Packet) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.stats.lastsent = time.Now().UnixNano()
+	now := time.Now()
+
+	// Dynamically adjust interval based on host status
+	if w.stats.adaptive_interval {
+		desiredInterval := w.stats.GetPingInterval()
+		// Check every 5 seconds if we need to update the interval
+		if now.Sub(w.lastIntervalCheck) > 5*time.Second {
+			if w.pinger.Interval != desiredInterval {
+				w.pinger.Interval = desiredInterval
+			}
+			w.lastIntervalCheck = now
+		}
+	}
+
+	w.stats.lastsent = now.UnixNano()
 }
 
 func (w *ProbingWrapper) onRecv(pkt *probing.Packet) {

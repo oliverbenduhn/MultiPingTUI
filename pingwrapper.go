@@ -53,21 +53,29 @@ func NewPingWrapper(host string, options Options, transition_writer *TransitionW
 			return NewErrorWrapper(host, err.Error(), transition_writer)
 		}
 
+		stats := &PWStats{transition_writer: transition_writer}
+		if options.adaptiveInterval != nil && *options.adaptiveInterval {
+			stats.EnableAdaptiveInterval()
+		}
 		return &TCPPingWrapper{
 			host:  found_host,
 			ip:    ip,
 			port:  found_port_int,
-			stats: &PWStats{transition_writer: transition_writer},
+			stats: stats,
 		}
 	} else if *options.system {
 		ip, err := resolveIPAddr(found_host, found_ip_family)
 		if err != nil {
 			return NewErrorWrapper(host, err.Error(), transition_writer)
 		}
+		stats := &PWStats{transition_writer: transition_writer}
+		if options.adaptiveInterval != nil && *options.adaptiveInterval {
+			stats.EnableAdaptiveInterval()
+		}
 		return &SystemPingWrapper{
 			host:         host,
 			ip:           ip,
-			stats:        &PWStats{transition_writer: transition_writer},
+			stats:        stats,
 			ping_options: *options.system_ping_options,
 		}
 	} else {
@@ -75,12 +83,16 @@ func NewPingWrapper(host string, options Options, transition_writer *TransitionW
 		if err != nil {
 			return NewErrorWrapper(host, err.Error(), transition_writer)
 		}
+		stats := &PWStats{transition_writer: transition_writer}
+		if options.adaptiveInterval != nil && *options.adaptiveInterval {
+			stats.EnableAdaptiveInterval()
+		}
 		return &ProbingWrapper{
 			host:       host,
 			ip:         ip,
 			privileged: *options.privileged,
 			size:       *options.size,
-			stats:      &PWStats{transition_writer: transition_writer},
+			stats:      stats,
 		}
 	}
 }

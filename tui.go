@@ -296,7 +296,7 @@ func (m *TUIModel) updateStatsCache() {
 	m.statsCacheTime = now
 
 	for _, wrapper := range m.repo.GetAll() {
-		stats := wrapper.CalcStats(2 * 1e9)
+		stats := wrapper.CalcStats(TimeoutThresholdNS)
 
 		// Detect state transitions for dashboard
 		if old, ok := m.statsCache[wrapper.Host()]; ok {

@@ -105,7 +105,7 @@ func (d *DNSUpdater) performDNSUpdates() {
 	var wg sync.WaitGroup
 
 	for _, wrapper := range wrappers {
-		stats := wrapper.CalcStats(2_000_000_000) // 2s threshold
+		stats := wrapper.CalcStats(TimeoutThresholdNS)
 
 		// Only update DNS for online hosts
 		if !stats.state || stats.error_message != "" {

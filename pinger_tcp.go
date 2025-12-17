@@ -16,15 +16,16 @@ import (
 )
 
 type TCPPingWrapper struct {
-	host          string
-	ip            *net.IPAddr
-	hstring       string
-	port          int
-	str_tgt       string
-	stats         *PWStats
-	stopCheckLoop bool
-	loopTicker    *time.Ticker
-	mu            sync.RWMutex
+	host              string
+	ip                *net.IPAddr
+	hstring           string
+	port              int
+	str_tgt           string
+	stats             *PWStats
+	stopCheckLoop     bool
+	loopTicker        *time.Ticker
+	mu                sync.RWMutex
+	lastIntervalCheck time.Time
 }
 
 func (w *TCPPingWrapper) Start() {
@@ -42,10 +43,31 @@ func (w *TCPPingWrapper) Start() {
 	}
 
 	w.stopCheckLoop = false
-	w.loopTicker = time.NewTicker(time.Second)
+
+	// Set initial interval based on adaptive mode
+	initialInterval := time.Second
+	if w.stats.adaptive_interval {
+		initialInterval = w.stats.GetPingInterval()
+		w.lastIntervalCheck = time.Now()
+	}
+	w.loopTicker = time.NewTicker(initialInterval)
 
 	go func(w *TCPPingWrapper) {
 		for !w.stopCheckLoop {
+			// Dynamically adjust interval based on host status
+			if w.stats.adaptive_interval {
+				w.mu.Lock()
+				if time.Now().Sub(w.lastIntervalCheck) > 5*time.Second {
+					desiredInterval := w.stats.GetPingInterval()
+					if desiredInterval != initialInterval {
+						w.loopTicker.Reset(desiredInterval)
+						initialInterval = desiredInterval
+					}
+					w.lastIntervalCheck = time.Now()
+				}
+				w.mu.Unlock()
+			}
+
 			go func(t *TCPPingWrapper) {
 				t.spawnChecker()
 			}(w)

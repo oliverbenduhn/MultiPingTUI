@@ -116,7 +116,7 @@ EOF
     fi
   fi
   (cd dist; sha256sum ${TARGET}${SUFFIX}) | tee -a ${BINBASE}.sha256sum
-  if [ -z "$NOCOMPRESS" ]; then
+  if [ -z "${NOCOMPRESS:-}" ]; then
     echo "[-]    - compress"
     if [ "$GOOS" = "windows" ]; then
       xz --keep dist/${TARGET}${SUFFIX}
@@ -138,7 +138,7 @@ mv ${BINBASE}.sha256sum dist/
 #echo "[*] pack"
 #tar -cvf all.tar -C dist/ . && mv all.tar dist
 
-if [ -z "$SKIP_GH_UPLOAD" ]; then
+if [ -z "${SKIP_GH_UPLOAD:-}" ]; then
   if command -v gh >/dev/null 2>&1; then
     echo "[*] GitHub upload"
     REMOTE_URL=$(git config --get remote.origin.url 2>/dev/null || echo "")

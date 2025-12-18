@@ -8,7 +8,7 @@ cd "${REPO_ROOT}"
 MODULE=$(grep module go.mod | cut -d\  -f2)
 BINBASE="mping"
 # Keep this in sync with `main.go` (run `./scripts/bump_version.sh 1.2.3` to update).
-VERSION=v1.1.2
+VERSION=v1.1.3
 CommitHash=dev
 BuildTimestamp=1970-01-01T00:00:00
 Builder="go version go1.xx.y os/platform"
@@ -166,3 +166,6 @@ if [ -z "${SKIP_GH_UPLOAD:-}" ]; then
 fi
 
 echo "[*] done"
+
+# Quick local build
+go build -o mping

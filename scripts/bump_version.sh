@@ -91,4 +91,7 @@ if remaining:
         print(f"  - {f}")
 
 print(f"updated: {old_v} -> {new_v}")
+
+# Quick local build
+go build -o mping
 PY

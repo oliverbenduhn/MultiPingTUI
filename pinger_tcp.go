@@ -57,7 +57,7 @@ func (w *TCPPingWrapper) Start() {
 			// Dynamically adjust interval based on host status
 			if w.stats.adaptive_interval {
 				w.mu.Lock()
-				if time.Now().Sub(w.lastIntervalCheck) > 5*time.Second {
+				if time.Since(w.lastIntervalCheck) > 5*time.Second {
 					desiredInterval := w.stats.GetPingInterval()
 					if desiredInterval != initialInterval {
 						w.loopTicker.Reset(desiredInterval)

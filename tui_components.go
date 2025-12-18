@@ -132,7 +132,6 @@ func (m FooterModel) View() string {
 
 // HostListModel handles the list of hosts
 type HostListModel struct {
-	wrappers         []PingWrapperInterface
 	cursor           int
 	scrollOffset     int
 	width            int

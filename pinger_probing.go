@@ -20,7 +20,6 @@ type ProbingWrapper struct {
 	stats             *PWStats
 	privileged        bool
 	mu                sync.RWMutex
-	lastPingTime      time.Time
 	lastIntervalCheck time.Time
 }
 

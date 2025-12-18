@@ -1694,14 +1694,7 @@ func validUpdateRate(r UpdateRate) bool {
 	}
 }
 
-func (s *StatusServer) renderHTMLHeader(columns []int) string {
-	var b strings.Builder
-	for _, c := range columns {
-		name := map[int]string{1: "St", 2: "Name", 3: "IP", 4: "RTT", 5: "Last Reply", 6: "Last Loss"}[c]
-		fmt.Fprintf(&b, "<th>%s</th>", name)
-	}
-	return b.String()
-}
+
 
 func marshalColumns(cols []int) string {
 	data, _ := json.Marshal(cols)

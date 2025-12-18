@@ -192,9 +192,7 @@ func (d *DNSUpdater) performDNSUpdates() {
 func looksLikeIPRepr(repr string) bool {
 	r := repr
 	// Allow tcp://host:port
-	if strings.HasPrefix(r, "tcp://") {
-		r = strings.TrimPrefix(r, "tcp://")
-	}
+	r = strings.TrimPrefix(r, "tcp://")
 	// Strip brackets
 	r = strings.Trim(r, "[]")
 	// Strip port if present

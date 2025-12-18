@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 go build -o mping
 
 # Build with release script (cross-platform, includes version info)
-./release.sh
+./scripts/release.sh
 
 # Build for specific platform (note: requires go mod vendor first)
 go mod vendor
@@ -180,7 +180,7 @@ No test files exist in the repository currently.
 ### Build System
 
 - Uses Go modules with vendored dependencies (`go.mod`, vendor/)
-- Version info injected via ldflags in `release.sh`
+- Version info injected via ldflags in `scripts/release.sh`
 - Cross-compiles for: linux, openbsd, freebsd, windows, darwin across amd64/arm/arm64/386
 - Outputs compressed (.xz) binaries for distribution
 - Self-update functionality via GitHub releases (selfupdate.go)
@@ -349,7 +349,7 @@ MultiPingTUI/
 ├── host_display.go            # Reverse DNS with timeout
 ├── subnet.go                  # CIDR expansion and once mode
 ├── selfupdate.go              # GitHub release updater
-├── release.sh                 # Cross-platform build script
+├── scripts/release.sh         # Cross-platform build script
 ├── go.mod / go.sum           # Dependencies
 └── vendor/                    # Vendored dependencies
 ```

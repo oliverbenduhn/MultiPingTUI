@@ -226,7 +226,7 @@ go build -o mping
 go mod vendor
 
 # Cross-build and package (Linux/Windows, version metadata)
-./release.sh
+./scripts/release.sh
 ```
 
 ## License

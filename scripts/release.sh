@@ -1,8 +1,17 @@
 #!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+cd "${REPO_ROOT}"
 
 MODULE=$(grep module go.mod | cut -d\  -f2)
 BINBASE="mping"
-VERSION=${VERSION:-$GITHUB_REF_NAME}
+# Keep this in sync with `main.go` (run `./scripts/bump_version.sh 1.2.3` to update).
+VERSION=v1.1.2
+CommitHash=dev
+BuildTimestamp=1970-01-01T00:00:00
+Builder="go version go1.xx.y os/platform"
 # Fallback: read version from main.go to keep single source of truth
 if [ -z "$VERSION" ]; then
   VERSION=$(grep -E '^var Version = "v[0-9]+\.[0-9]+\.[0-9]+"' main.go | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')

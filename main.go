@@ -166,6 +166,15 @@ func main() {
 		}
 	}
 
+	// Adaptive intervals use 10s for never-seen hosts, so timeout must be at least 12s
+	// to avoid false offline flapping. Override the earlier system/non-system threshold.
+	if config.AdaptiveInterval {
+		TimeoutThresholdNS = int64(12 * time.Second)
+		if DebugMode {
+			fmt.Fprintf(os.Stderr, "DEBUG: Timeout threshold set to 12s (adaptive interval mode)\n")
+		}
+	}
+
 	if DebugMode {
 		fmt.Fprintf(os.Stderr, "DEBUG: Total hosts to ping: %d\n", len(hosts))
 	}

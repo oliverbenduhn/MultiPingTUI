@@ -95,9 +95,13 @@ func (w *SystemPingWrapper) Start() {
 			line := scanner.Text()
 			extracted := extractor.FindAllStringSubmatch(line, -1)
 			if len(extracted) > 0 {
+				rtt, rttString := parseSystemPingRTT(extracted[0][1], extracted[0][2])
 				w.mu.Lock()
+				w.stats.has_ever_received = true
 				w.stats.lastrecv = time.Now().UnixNano()
-				w.stats.lastrtt_as_string = extracted[0][1] + extracted[0][2]
+				w.stats.lastrtt = rtt
+				w.stats.lastrtt_as_string = rttString
+				w.stats.error_message = ""
 				w.mu.Unlock()
 			}
 		}
@@ -144,4 +148,17 @@ func (w *SystemPingWrapper) SetHostRepr(h string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.stats.SetHostRepr(h)
+}
+
+func parseSystemPingRTT(value, unit string) (time.Duration, string) {
+	unit = strings.TrimSpace(unit)
+	if unit == "" {
+		unit = "ms"
+	}
+	raw := strings.TrimSpace(value) + unit
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, raw
+	}
+	return d, round(d, 2).String()
 }

@@ -161,3 +161,78 @@ func TestTUITruncateDisplayPreservesUTF8(t *testing.T) {
 		t.Fatalf("expected truncation, got %q", got)
 	}
 }
+
+func TestParseSystemPingRTT(t *testing.T) {
+	got, label := parseSystemPingRTT("12.34", "ms")
+	if got != 12340*time.Microsecond {
+		t.Fatalf("expected 12.34ms, got %s", got)
+	}
+	if label != "12.34ms" {
+		t.Fatalf("expected rounded label 12.34ms, got %q", label)
+	}
+
+	got, label = parseSystemPingRTT("1", "s")
+	if got != time.Second {
+		t.Fatalf("expected 1s, got %s", got)
+	}
+	if label != "1s" {
+		t.Fatalf("expected label 1s, got %q", label)
+	}
+}
+
+func TestDashboardAggregatesRTTByDuration(t *testing.T) {
+	repo := NewMemoryHostRepository()
+	fast := &countingWrapper{host: "fast"}
+	slow := &countingWrapper{host: "slow"}
+	noRTT := &countingWrapper{host: "nortt"}
+	repo.UpdateAll([]PingWrapperInterface{fast, slow, noRTT})
+
+	stats := map[string]PWStats{
+		"fast": {
+			state:             true,
+			has_ever_received: true,
+			lastrtt:           9 * time.Millisecond,
+			lastrtt_as_string: "9ms",
+		},
+		"slow": {
+			state:             true,
+			has_ever_received: true,
+			lastrtt:           100 * time.Millisecond,
+			lastrtt_as_string: "100ms",
+		},
+		"nortt": {
+			state:             true,
+			has_ever_received: true,
+		},
+	}
+	server := &StatusServer{
+		repo:        repo,
+		view:        ServerView{},
+		globalStats: NewGlobalStatistics(),
+		statsProvider: func(wrapper PingWrapperInterface) PWStats {
+			return stats[wrapper.Host()]
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard", nil)
+	rec := httptest.NewRecorder()
+	server.dashboardApiHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var dashboard DashboardStats
+	if err := json.Unmarshal(rec.Body.Bytes(), &dashboard); err != nil {
+		t.Fatalf("decode dashboard: %v", err)
+	}
+	if dashboard.AvgRTT != "54.5ms" {
+		t.Fatalf("expected avg RTT over hosts with RTT only, got %q", dashboard.AvgRTT)
+	}
+	if len(dashboard.TopRTT) < 2 {
+		t.Fatalf("expected top RTT entries, got %#v", dashboard.TopRTT)
+	}
+	if dashboard.TopRTT[0].Host != "slow" || dashboard.TopRTT[1].Host != "fast" {
+		t.Fatalf("expected duration sort slow before fast, got %#v", dashboard.TopRTT)
+	}
+}

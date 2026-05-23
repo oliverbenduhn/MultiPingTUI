@@ -993,6 +993,7 @@ func (m *TUIModel) renderDashboardView() string {
 	countOffline := 0
 	countNever := 0
 	var totalRTT time.Duration
+	rttCount := 0
 
 	offlineEntries := make([]entry, 0, len(visibleWrappers))
 	hotRTT := make([]entry, 0, len(visibleWrappers))
@@ -1019,6 +1020,7 @@ func (m *TUIModel) renderDashboardView() string {
 			countOnline++
 			if st.lastrtt > 0 {
 				totalRTT += st.lastrtt
+				rttCount++
 				// Bucket logic
 				for i := range buckets {
 					if st.lastrtt < buckets[i].max {
@@ -1115,8 +1117,8 @@ func (m *TUIModel) renderDashboardView() string {
 	// Global Stats
 	uptime := time.Since(m.globalStats.GetStartTime()).Round(time.Second)
 	avgRTT := "N/A"
-	if countOnline > 0 {
-		avgRTT = (totalRTT / time.Duration(countOnline)).Round(time.Microsecond).String()
+	if rttCount > 0 {
+		avgRTT = (totalRTT / time.Duration(rttCount)).Round(time.Microsecond).String()
 	}
 
 	b.WriteString(fmt.Sprintf("Total: %-5d │ Online: %-4d │ Offline: %-4d │ Never seen: %d\n", total, countOnline, countOffline, countNever))

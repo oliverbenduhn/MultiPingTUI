@@ -1915,8 +1915,13 @@ func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, _ *http.Reques
 	}
 
 	offlineList := make([]HostStatus, 0)
-	rttList := make([]HostStatus, 0)
+	type rttEntry struct {
+		status HostStatus
+		rtt    time.Duration
+	}
+	rttList := make([]rttEntry, 0)
 	now := time.Now()
+	rttCount := 0
 
 	for _, wrapper := range visible {
 		st := s.statsProvider(wrapper)
@@ -1927,6 +1932,7 @@ func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, _ *http.Reques
 			online++
 			if st.lastrtt > 0 {
 				totalRTT += st.lastrtt
+				rttCount++
 				for i := range buckets {
 					if st.lastrtt < buckets[i].max {
 						buckets[i].count++
@@ -1963,7 +1969,7 @@ func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, _ *http.Reques
 		if !isOnline {
 			offlineList = append(offlineList, hs)
 		} else if st.lastrtt > 0 {
-			rttList = append(rttList, hs)
+			rttList = append(rttList, rttEntry{status: hs, rtt: st.lastrtt})
 		}
 	}
 
@@ -1975,10 +1981,14 @@ func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, _ *http.Reques
 	}
 
 	sort.Slice(rttList, func(i, j int) bool {
-		return rttList[i].RTT > rttList[j].RTT
+		return rttList[i].rtt > rttList[j].rtt
 	})
 	if len(rttList) > 5 {
 		rttList = rttList[:5]
+	}
+	topRTT := make([]HostStatus, 0, len(rttList))
+	for _, entry := range rttList {
+		topRTT = append(topRTT, entry.status)
 	}
 
 	health := 0.0
@@ -1987,8 +1997,8 @@ func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, _ *http.Reques
 	}
 
 	avgRTT := "N/A"
-	if online > 0 {
-		avgRTT = (totalRTT / time.Duration(online)).Round(time.Microsecond).String()
+	if rttCount > 0 {
+		avgRTT = (totalRTT / time.Duration(rttCount)).Round(time.Microsecond).String()
 	}
 
 	uptime := "N/A"
@@ -2013,7 +2023,7 @@ func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, _ *http.Reques
 		HealthPercent:     health,
 		RecentTransitions: transitions,
 		TopOffline:        offlineList,
-		TopRTT:            rttList,
+		TopRTT:            topRTT,
 		RTTDist:           dist,
 	}
 

@@ -8,18 +8,21 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 )
 
 type TCPPingWrapper struct {
-	host          string
-	ip            *net.IPAddr
-	hstring       string
-	port          int
-	str_tgt       string
-	stats         *PWStats
-	stopCheckLoop bool
-	loopTicker    *time.Ticker
+	host       string
+	ip         *net.IPAddr
+	hstring    string
+	port       int
+	str_tgt    string
+	stats      *PWStats
+	loopTicker *time.Ticker
+	stopChan   chan struct{}
+	stopOnce   sync.Once
+	mu         sync.RWMutex
 }
 
 func (w *TCPPingWrapper) Start() {
@@ -31,15 +34,20 @@ func (w *TCPPingWrapper) Start() {
 
 	w.str_tgt = fmt.Sprintf("%v:%v", w.ip.String(), w.port)
 
-	w.stopCheckLoop = false
+	w.stopChan = make(chan struct{})
+	w.stopOnce = sync.Once{}
 	w.loopTicker = time.NewTicker(time.Second)
 
 	go func(w *TCPPingWrapper) {
-		for !w.stopCheckLoop {
+		for {
 			go func(t *TCPPingWrapper) {
 				t.spawnChecker()
 			}(w)
-			<-w.loopTicker.C
+			select {
+			case <-w.loopTicker.C:
+			case <-w.stopChan:
+				return
+			}
 		}
 	}(w)
 
@@ -60,18 +68,26 @@ func (w *TCPPingWrapper) spawnChecker() {
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "tcp", w.str_tgt)
 	if err == nil {
+		w.mu.Lock()
 		w.stats.has_ever_received = true
 		w.stats.lastrecv = time.Now().UnixNano()
 		w.stats.lastrtt = time.Since(start)
 		w.stats.lastrtt_as_string = round(w.stats.lastrtt, 2).String()
+		w.mu.Unlock()
 		conn.Close()
 	}
 
 }
 
 func (w *TCPPingWrapper) Stop() {
-	w.stopCheckLoop = true
-	w.loopTicker.Stop()
+	w.stopOnce.Do(func() {
+		if w.loopTicker != nil {
+			w.loopTicker.Stop()
+		}
+		if w.stopChan != nil {
+			close(w.stopChan)
+		}
+	})
 }
 
 func (w *TCPPingWrapper) Host() string {
@@ -79,14 +95,21 @@ func (w *TCPPingWrapper) Host() string {
 }
 
 func (w *TCPPingWrapper) CalcStats(timeout_threshold int64) PWStats {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.stats.ComputeState(timeout_threshold)
 	return *w.stats
 }
 
 func (w *TCPPingWrapper) Stats() *PWStats {
-	return w.stats
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	s := *w.stats
+	return &s
 }
 
 func (w *TCPPingWrapper) SetHostRepr(h string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.stats.SetHostRepr(h)
 }

@@ -22,8 +22,9 @@ type TCPPingWrapper struct {
 	port              int
 	str_tgt           string
 	stats             *PWStats
-	stopCheckLoop     bool
 	loopTicker        *time.Ticker
+	stopChan          chan struct{}
+	stopOnce          sync.Once
 	mu                sync.RWMutex
 	lastIntervalCheck time.Time
 }
@@ -42,7 +43,8 @@ func (w *TCPPingWrapper) Start() {
 		w.str_tgt = fmt.Sprintf("%v:%v", w.ip.String(), w.port)
 	}
 
-	w.stopCheckLoop = false
+	w.stopChan = make(chan struct{})
+	w.stopOnce = sync.Once{}
 
 	// Set initial interval based on adaptive mode
 	initialInterval := time.Second
@@ -53,7 +55,7 @@ func (w *TCPPingWrapper) Start() {
 	w.loopTicker = time.NewTicker(initialInterval)
 
 	go func(w *TCPPingWrapper) {
-		for !w.stopCheckLoop {
+		for {
 			// Dynamically adjust interval based on host status
 			if w.stats.adaptive_interval {
 				w.mu.Lock()
@@ -71,7 +73,11 @@ func (w *TCPPingWrapper) Start() {
 			go func(t *TCPPingWrapper) {
 				t.spawnChecker()
 			}(w)
-			<-w.loopTicker.C
+			select {
+			case <-w.loopTicker.C:
+			case <-w.stopChan:
+				return
+			}
 		}
 	}(w)
 
@@ -104,8 +110,14 @@ func (w *TCPPingWrapper) spawnChecker() {
 }
 
 func (w *TCPPingWrapper) Stop() {
-	w.stopCheckLoop = true
-	w.loopTicker.Stop()
+	w.stopOnce.Do(func() {
+		if w.loopTicker != nil {
+			w.loopTicker.Stop()
+		}
+		if w.stopChan != nil {
+			close(w.stopChan)
+		}
+	})
 }
 
 func (w *TCPPingWrapper) Host() string {

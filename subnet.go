@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"os"
 	"runtime"
@@ -13,12 +15,28 @@ import (
 	"github.com/pterm/pterm"
 )
 
+const (
+	maxExpandedCIDRHosts = 65536
+	onceWorkerLimit      = 100
+)
+
+var ErrCIDRTooLarge = errors.New("CIDR expands beyond host limit")
+
 // ExpandCIDR takes a CIDR string (e.g. "192.168.1.0/24") and returns a list of all IPs in that subnet.
 // It returns nil if the string is not a valid CIDR.
 func ExpandCIDR(cidr string) ([]string, error) {
 	ip, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return nil, err
+	}
+
+	ones, bits := ipnet.Mask.Size()
+	if ones < 0 || bits <= 0 {
+		return nil, fmt.Errorf("invalid CIDR mask: %s", cidr)
+	}
+	hostCount := cidrHostCount(ones, bits)
+	if hostCount > maxExpandedCIDRHosts {
+		return nil, fmt.Errorf("%w: %s maximum is %d", ErrCIDRTooLarge, cidr, maxExpandedCIDRHosts)
 	}
 
 	var ips []string
@@ -33,6 +51,22 @@ func ExpandCIDR(cidr string) ([]string, error) {
 	return ips, nil
 }
 
+func cidrHostCount(ones, bits int) int64 {
+	hostBits := bits - ones
+	if hostBits < 0 {
+		return 0
+	}
+	total := new(big.Int).Lsh(big.NewInt(1), uint(hostBits))
+	if total.Cmp(big.NewInt(2)) > 0 {
+		total.Sub(total, big.NewInt(2))
+	}
+	limit := big.NewInt(maxExpandedCIDRHosts + 1)
+	if total.Cmp(limit) > 0 {
+		return int64(maxExpandedCIDRHosts + 1)
+	}
+	return total.Int64()
+}
+
 type OnceResult struct {
 	IP       string
 	Hostname string
@@ -42,78 +76,32 @@ type OnceResult struct {
 func RunPingOnce(hosts []string, onlyOnline, onlyOffline bool, logFile string) {
 	fmt.Printf("Pinging %d targets...\n", len(hosts))
 
-	var wg sync.WaitGroup
 	results := make(chan OnceResult, len(hosts))
+	jobs := make(chan string)
+	workerCount := onceWorkerLimit
+	if len(hosts) < workerCount {
+		workerCount = len(hosts)
+	}
+	if workerCount < 1 {
+		workerCount = 1
+	}
 
-	// Limit concurrency to avoid file descriptor limits
-	sem := make(chan struct{}, 100)
-
-	for _, host := range hosts {
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
-		go func(target string) {
+		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			// Simple heuristic: if it looks like an IP, use it directly, otherwise let pinger resolve it
-			// But pro-bing handles resolution.
-			// However, for our "ping once" mode, we want to be robust.
-
-			pinger, err := probing.NewPinger(target)
-			if err != nil {
-				if !onlyOnline {
-					results <- OnceResult{IP: target, Hostname: "-", Status: fmt.Sprintf("Error (%v)", err)}
-				}
-				return
+			for target := range jobs {
+				pingOnceTarget(target, onlyOnline, onlyOffline, results)
 			}
-
-			pinger.Count = 1
-			pinger.Timeout = 1 * time.Second
-			pinger.SetPrivileged(true) // Try privileged first
-			if runtime.GOOS == "linux" {
-				pinger.SetDoNotFragment(true)
-			}
-
-			// Fallback for unprivileged if needed
-			if runtime.GOOS != "windows" && os.Getuid() != 0 {
-				pinger.SetPrivileged(false)
-			}
-
-			err = pinger.Run()
-			if err != nil {
-				if !onlyOnline {
-					results <- OnceResult{IP: target, Hostname: "-", Status: fmt.Sprintf("Error (%v)", err)}
-				}
-				return
-			}
-
-			// Get resolved IP address
-			ipAddrObj := pinger.IPAddr()
-			ipAddr := ipAddrObj.String()
-
-			// Perform reverse DNS lookup (with timeout)
-			hostname := "-"
-			if !SkipDNS {
-				hostname = hostDisplayName(target, ipAddrObj)
-			}
-			// If hostname is same as IP, show "-" for cleaner output
-			if hostname == ipAddr || hostname == target {
-				hostname = "-"
-			}
-
-			if pinger.Statistics().PacketsRecv > 0 {
-				if !onlyOffline {
-					results <- OnceResult{IP: ipAddr, Hostname: hostname, Status: "Online"}
-				}
-			} else {
-				if !onlyOnline {
-					results <- OnceResult{IP: ipAddr, Hostname: hostname, Status: "Offline"}
-				}
-			}
-		}(host)
+		}()
 	}
 
 	go func() {
+		for _, host := range hosts {
+			jobs <- host
+		}
+		close(jobs)
 		wg.Wait()
 		close(results)
 	}()
@@ -123,7 +111,60 @@ func RunPingOnce(hosts []string, onlyOnline, onlyOffline bool, logFile string) {
 	for res := range results {
 		resultList = append(resultList, res)
 	}
+	writeAndPrintOnceResults(resultList, logFile)
+}
 
+func pingOnceTarget(target string, onlyOnline, onlyOffline bool, results chan<- OnceResult) {
+	pinger, err := probing.NewPinger(target)
+	if err != nil {
+		if !onlyOnline {
+			results <- OnceResult{IP: target, Hostname: "-", Status: fmt.Sprintf("Error (%v)", err)}
+		}
+		return
+	}
+
+	pinger.Count = 1
+	pinger.Timeout = 1 * time.Second
+	pinger.SetPrivileged(true)
+	if runtime.GOOS == "linux" {
+		pinger.SetDoNotFragment(true)
+	}
+
+	if runtime.GOOS != "windows" && os.Getuid() != 0 {
+		pinger.SetPrivileged(false)
+	}
+
+	err = pinger.Run()
+	if err != nil {
+		if !onlyOnline {
+			results <- OnceResult{IP: target, Hostname: "-", Status: fmt.Sprintf("Error (%v)", err)}
+		}
+		return
+	}
+
+	ipAddrObj := pinger.IPAddr()
+	ipAddr := ipAddrObj.String()
+
+	hostname := "-"
+	if !SkipDNS {
+		hostname = hostDisplayName(target, ipAddrObj)
+	}
+	if hostname == ipAddr || hostname == target {
+		hostname = "-"
+	}
+
+	if pinger.Statistics().PacketsRecv > 0 {
+		if !onlyOffline {
+			results <- OnceResult{IP: ipAddr, Hostname: hostname, Status: "Online"}
+		}
+	} else {
+		if !onlyOnline {
+			results <- OnceResult{IP: ipAddr, Hostname: hostname, Status: "Offline"}
+		}
+	}
+}
+
+func writeAndPrintOnceResults(resultList []OnceResult, logFile string) {
 	// Write to log file if specified
 	if logFile != "" {
 		f, err := os.Create(logFile)

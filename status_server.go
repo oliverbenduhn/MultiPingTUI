@@ -346,6 +346,12 @@ type viewPatch struct {
 	Hidden map[string]bool `json:"hidden,omitempty"`
 }
 
+const (
+	maxViewPatchBytes  = 1 << 20
+	maxHiddenViewItems = 10000
+	maxHiddenKeyLength = 512
+)
+
 func (s *StatusServer) viewHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -360,7 +366,8 @@ func (s *StatusServer) viewHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		defer r.Body.Close()
 		var patch viewPatch
-		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+		body := http.MaxBytesReader(w, r.Body, maxViewPatchBytes)
+		if err := json.NewDecoder(body).Decode(&patch); err != nil {
 			http.Error(w, "invalid JSON body", http.StatusBadRequest)
 			return
 		}
@@ -376,7 +383,7 @@ func (s *StatusServer) viewHandler(w http.ResponseWriter, r *http.Request) {
 			s.view.Rate = *patch.Rate
 		}
 		if patch.Hidden != nil {
-			s.view.Hidden = patch.Hidden
+			s.view.Hidden = s.sanitizeHiddenHosts(patch.Hidden)
 		}
 		if patch.Cols != nil {
 			s.view.Cols = normalizeColumns(patch.Cols)
@@ -394,6 +401,33 @@ func (s *StatusServer) viewHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+}
+
+func (s *StatusServer) sanitizeHiddenHosts(hidden map[string]bool) map[string]bool {
+	out := make(map[string]bool)
+	if len(hidden) == 0 {
+		return out
+	}
+
+	known := make(map[string]bool)
+	for _, wrapper := range s.repo.GetAll() {
+		known[wrapper.Host()] = true
+	}
+
+	for key, value := range hidden {
+		if len(out) >= maxHiddenViewItems {
+			break
+		}
+		key = strings.TrimSpace(key)
+		if key == "" || len(key) > maxHiddenKeyLength || !value {
+			continue
+		}
+		if !known[key] {
+			continue
+		}
+		out[key] = true
+	}
+	return out
 }
 
 func (s *StatusServer) textHandler(w http.ResponseWriter, _ *http.Request) {
@@ -1694,8 +1728,6 @@ func validUpdateRate(r UpdateRate) bool {
 	}
 }
 
-
-
 func marshalColumns(cols []int) string {
 	data, _ := json.Marshal(cols)
 	return string(data)
@@ -2101,6 +2133,14 @@ func (s *StatusServer) dashboardHtmlHandler(w http.ResponseWriter, _ *http.Reque
   </div>
 
   <script>
+    function appendText(parent, tag, text, className) {
+      const el = document.createElement(tag);
+      if (className) el.className = className;
+      el.textContent = text == null ? '' : String(text);
+      parent.appendChild(el);
+      return el;
+    }
+
     async function refresh() {
       try {
         const res = await fetch('/api/dashboard', {cache:'no-store'});
@@ -2125,10 +2165,15 @@ func (s *StatusServer) dashboardHtmlHandler(w http.ResponseWriter, _ *http.Reque
         (data.recent_transitions || []).slice(0, 10).forEach(t => {
           const div = document.createElement('div');
           div.className = 'list-item';
-          const type = t.State ? '<span class="badge up">UP</span>' : '<span class="badge down">DOWN</span>';
           const time = new Date(t.When).toLocaleTimeString();
           const dur = (t.Duration / 1e9).toFixed(1) + 's';
-          div.innerHTML = '<div>' + type + ' <b>' + t.Host + '</b></div><div style="color:var(--text-muted)">' + time + ' (' + dur + ')</div>';
+          const left = document.createElement('div');
+          appendText(left, 'span', t.State ? 'UP' : 'DOWN', t.State ? 'badge up' : 'badge down');
+          left.appendChild(document.createTextNode(' '));
+          appendText(left, 'b', t.Host || '', '');
+          const right = appendText(div, 'div', time + ' (' + dur + ')', '');
+          right.style.color = 'var(--text-muted)';
+          div.insertBefore(left, right);
           transEl.appendChild(div);
         });
         
@@ -2139,7 +2184,8 @@ func (s *StatusServer) dashboardHtmlHandler(w http.ResponseWriter, _ *http.Reque
              if (b.count === 0) return;
              const div = document.createElement('div');
              div.className = 'stat-row';
-             div.innerHTML = '<span>' + b.label + '</span><span class="stat-val">' + b.count + '</span>';
+             appendText(div, 'span', b.label, '');
+             appendText(div, 'span', b.count, 'stat-val');
              rttDistEl.appendChild(div);
            }
         });
@@ -2149,7 +2195,9 @@ func (s *StatusServer) dashboardHtmlHandler(w http.ResponseWriter, _ *http.Reque
         (data.top_offline || []).forEach(h => {
             const div = document.createElement('div');
             div.className = 'list-item';
-            div.innerHTML = '<span>' + h.host + '</span><span class="stat-val" style="color:var(--text-muted)">' + h.last_reply + '</span>';
+            appendText(div, 'span', h.host, '');
+            const lastReply = appendText(div, 'span', h.last_reply, 'stat-val');
+            lastReply.style.color = 'var(--text-muted)';
             offEl.appendChild(div);
         });
         
@@ -2158,7 +2206,8 @@ func (s *StatusServer) dashboardHtmlHandler(w http.ResponseWriter, _ *http.Reque
         (data.top_rtt || []).forEach(h => {
             const div = document.createElement('div');
             div.className = 'list-item';
-            div.innerHTML = '<span>' + h.host + '</span><span class="stat-val">' + h.rtt + '</span>';
+            appendText(div, 'span', h.host, '');
+            appendText(div, 'span', h.rtt, 'stat-val');
             rttListEl.appendChild(div);
         });
 

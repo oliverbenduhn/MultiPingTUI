@@ -143,6 +143,9 @@ func main() {
 			}
 			hosts = append(hosts, ips...)
 			hasSubnet = true
+		} else if errors.Is(err, ErrCIDRTooLarge) {
+			fmt.Fprintf(os.Stderr, "error expanding subnet: %v\n", err)
+			os.Exit(1)
 		} else {
 			// Not a CIDR, treat as single host
 			hosts = append(hosts, arg)
@@ -230,7 +233,6 @@ func main() {
 		if !config.OnlyOnline && !config.OnlyOffline && validFilterMode(userSettings.View.Filter) {
 			initialFilter = userSettings.View.Filter
 		}
-		ps.Start()
 		err := RunTUI(ps, repo, transition_writer, initialFilter, config.WebPort, globalStats, userSettings, rawHosts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)

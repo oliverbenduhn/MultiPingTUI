@@ -373,7 +373,6 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if elapsed >= interval {
 			// Update stats cache for all wrappers
 			m.updateStatsCache()
-			m.updateStatsCache()
 			m.lastTickTime = now
 			m.hostList.cacheInvalidated = true
 		}

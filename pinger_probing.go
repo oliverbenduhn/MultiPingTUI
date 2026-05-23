@@ -78,6 +78,9 @@ func (w *ProbingWrapper) Start() {
 }
 
 func (w *ProbingWrapper) Stop() {
+	if w.pinger == nil {
+		return
+	}
 	w.pinger.Stop()
 }
 

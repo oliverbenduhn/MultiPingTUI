@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/mattn/go-runewidth"
 )
 
 func (m *HostListModel) renderListView(wrappers []PingWrapperInterface, getCachedStats func(PingWrapperInterface) PWStats) string {
@@ -79,8 +81,10 @@ func (m *HostListModel) renderListView(wrappers []PingWrapperInterface, getCache
 	totalWidth += spaceCount
 
 	target := m.width - 2
-	if target < 50 {
-		target = 50
+	if m.width <= 0 {
+		target = 100
+	} else if target < 10 {
+		target = 10
 	}
 
 	// Shrink columns (starting with the widest) until we fit, but not below mins
@@ -126,19 +130,19 @@ shrinkColumns:
 	// Build table header based on visible columns with dynamic widths
 	var headerParts []string
 	if m.visibleColumns[1] {
-		headerParts = append(headerParts, fmt.Sprintf("%-*s", statusWidth, "1:St"))
+		headerParts = append(headerParts, displayPad("1:St", statusWidth))
 	}
 	if m.visibleColumns[2] {
-		headerParts = append(headerParts, fmt.Sprintf("%-*s", nameWidth, "2:Name"))
+		headerParts = append(headerParts, displayPad("2:Name", nameWidth))
 	}
 	if m.visibleColumns[3] {
-		headerParts = append(headerParts, fmt.Sprintf("%-*s", ipWidth, "3:IP"))
+		headerParts = append(headerParts, displayPad("3:IP", ipWidth))
 	}
 	if m.visibleColumns[4] {
-		headerParts = append(headerParts, fmt.Sprintf("%-*s", rttWidth, "4:RTT"))
+		headerParts = append(headerParts, displayPad("4:RTT", rttWidth))
 	}
 	if m.visibleColumns[5] {
-		headerParts = append(headerParts, fmt.Sprintf("%-*s", lastReplyWidth, "5:Last Reply"))
+		headerParts = append(headerParts, displayPad("5:Last Reply", lastReplyWidth))
 	}
 	if m.visibleColumns[6] {
 		headerParts = append(headerParts, "6:Last Loss")
@@ -149,8 +153,10 @@ shrinkColumns:
 	s.WriteString("\n")
 	// Separator line with minimum width
 	sepWidth := m.width - 2
-	if sepWidth < 10 {
-		sepWidth = 100 // Default width if terminal size not yet known
+	if m.width <= 0 {
+		sepWidth = totalWidth
+	} else if sepWidth < 1 {
+		sepWidth = 1
 	}
 	s.WriteString(separatorStyle.Render(strings.Repeat("─", sepWidth)))
 	s.WriteString("\n")
@@ -183,25 +189,13 @@ shrinkColumns:
 		if name == "" {
 			name = wrapper.Host()
 		}
-		if len(name) > nameWidth {
-			if nameWidth > 3 {
-				name = name[:nameWidth-3] + "..."
-			} else {
-				name = name[:nameWidth]
-			}
-		}
+		name = truncateDisplay(name, nameWidth)
 
 		ip := stats.iprepr
 		if ip == "" {
 			ip = "-"
 		}
-		if len(ip) > ipWidth {
-			if ipWidth > 3 {
-				ip = ip[:ipWidth-3] + "..."
-			} else {
-				ip = ip[:ipWidth]
-			}
-		}
+		ip = truncateDisplay(ip, ipWidth)
 
 		rtt := stats.lastrtt_as_string
 		if !isOnline {
@@ -228,19 +222,19 @@ shrinkColumns:
 		// Build line based on visible columns with dynamic widths
 		var lineParts []string
 		if m.visibleColumns[1] {
-			lineParts = append(lineParts, fmt.Sprintf("%-*s", statusWidth, status))
+			lineParts = append(lineParts, displayPad(status, statusWidth))
 		}
 		if m.visibleColumns[2] {
-			lineParts = append(lineParts, fmt.Sprintf("%-*s", nameWidth, name))
+			lineParts = append(lineParts, displayPad(name, nameWidth))
 		}
 		if m.visibleColumns[3] {
-			lineParts = append(lineParts, fmt.Sprintf("%-*s", ipWidth, ip))
+			lineParts = append(lineParts, displayPad(ip, ipWidth))
 		}
 		if m.visibleColumns[4] {
-			lineParts = append(lineParts, fmt.Sprintf("%-*s", rttWidth, rtt))
+			lineParts = append(lineParts, displayPad(rtt, rttWidth))
 		}
 		if m.visibleColumns[5] {
-			lineParts = append(lineParts, fmt.Sprintf("%-*s", lastReplyWidth, lastReply))
+			lineParts = append(lineParts, displayPad(lastReply, lastReplyWidth))
 		}
 		if m.visibleColumns[6] {
 			lineParts = append(lineParts, lastLoss)
@@ -473,4 +467,26 @@ func (m *HostListModel) getColumnName(colNum int) string {
 	default:
 		return "Unknown"
 	}
+}
+
+func truncateDisplay(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if runewidth.StringWidth(s) <= width {
+		return s
+	}
+	if width <= 3 {
+		return runewidth.Truncate(s, width, "")
+	}
+	return runewidth.Truncate(s, width, "...")
+}
+
+func displayPad(s string, width int) string {
+	s = truncateDisplay(s, width)
+	padding := width - runewidth.StringWidth(s)
+	if padding <= 0 {
+		return s
+	}
+	return s + strings.Repeat(" ", padding)
 }

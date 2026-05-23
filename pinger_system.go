@@ -73,8 +73,22 @@ func (w *SystemPingWrapper) Start() {
 
 	w.cmd = exec.Command(path, args...)
 	w.cmd.Env = append(w.cmd.Environ(), "LANG=C")
-	r, _ := w.cmd.StdoutPipe()
+	r, err := w.cmd.StdoutPipe()
+	if err != nil {
+		w.mu.Lock()
+		w.stats.error_message = err.Error()
+		w.mu.Unlock()
+		return
+	}
 	scanner := bufio.NewScanner(r)
+	if err := w.cmd.Start(); err != nil {
+		w.mu.Lock()
+		w.stats.error_message = err.Error()
+		w.mu.Unlock()
+		return
+	}
+
+	cmdString := w.cmd.String()
 	go func() {
 		// Read line by line and process it
 		for scanner.Scan() {
@@ -87,20 +101,25 @@ func (w *SystemPingWrapper) Start() {
 				w.mu.Unlock()
 			}
 		}
+		err := w.cmd.Wait()
 		w.mu.Lock()
-		w.stats.error_message = fmt.Sprintf("%v exited code %v", w.cmd.String(), w.cmd.ProcessState.ExitCode())
+		if err != nil {
+			w.stats.error_message = fmt.Sprintf("%v exited: %v", cmdString, err)
+		} else {
+			w.stats.error_message = fmt.Sprintf("%v exited", cmdString)
+		}
 		w.mu.Unlock()
 	}()
-	if err := w.cmd.Start(); err != nil {
-		w.mu.Lock()
-		w.stats.error_message = err.Error()
-		w.mu.Unlock()
-		return
-	}
 }
 
 func (w *SystemPingWrapper) Stop() {
-	w.cmd.Process.Signal(os.Interrupt)
+	w.mu.RLock()
+	cmd := w.cmd
+	w.mu.RUnlock()
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	_ = cmd.Process.Signal(os.Interrupt)
 }
 
 func (w *SystemPingWrapper) Host() string {

@@ -123,9 +123,9 @@ func (m FooterModel) View() string {
 	case FooterDashboard:
 		s.WriteString(helpStyle.Render("esc: back │ d: back │ q: quit"))
 	default:
-		s.WriteString(helpStyle.Render("↑↓/jk: navigate │ enter: details │ d: dashboard │ e: edit config │ 1-6: toggle columns │ q: quit"))
+		s.WriteString(helpStyle.Render("↑↓/jk: navigate │ enter: details │ del: hide host │ ins: show all │ d: dashboard │ e: edit config │ 1-6: columns │ q: quit"))
 		s.WriteString("\n")
-		s.WriteString(helpStyle.Render("f: cycle filters (smart/online/offline/all) │ s: cycle sort (name/status/rtt/last/ip) │ r: cycle rate (100ms/1s/5s/30s)"))
+		s.WriteString(helpStyle.Render("f: filter │ s: sort │ r: rate (100ms/1s/5s/30s) │ pgup/pgdn: scroll"))
 	}
 	return s.String()
 }

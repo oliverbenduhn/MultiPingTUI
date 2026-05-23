@@ -83,6 +83,8 @@ type traceResponse struct {
 	Output     string    `json:"output,omitempty"`
 }
 
+const maxTraceStates = 256
+
 func StartStatusServer(repo HostRepository, provider StatsProvider, initialView ServerView, port int, globalStats *GlobalStatistics) (*StatusServer, error) {
 	if port <= 0 {
 		return nil, nil
@@ -143,6 +145,17 @@ func (s *StatusServer) Stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = s.srv.Shutdown(ctx)
+}
+
+func allowMethods(w http.ResponseWriter, r *http.Request, methods ...string) bool {
+	for _, method := range methods {
+		if r.Method == method {
+			return true
+		}
+	}
+	w.Header().Set("Allow", strings.Join(methods, ", "))
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	return false
 }
 
 func (s *StatusServer) traceHandler(w http.ResponseWriter, r *http.Request) {
@@ -252,7 +265,33 @@ func (s *StatusServer) getOrCreateTraceState(key string) *webTraceState {
 	}
 	st := &webTraceState{}
 	s.traces[key] = st
+	s.pruneTraceStatesLocked(key)
 	return st
+}
+
+func (s *StatusServer) pruneTraceStatesLocked(keepKey string) {
+	if len(s.traces) <= maxTraceStates {
+		return
+	}
+
+	var deleteKey string
+	var deleteTime time.Time
+	for key, st := range s.traces {
+		if key == keepKey || st == nil || st.running {
+			continue
+		}
+		t := st.finishedAt
+		if t.IsZero() {
+			t = st.startedAt
+		}
+		if deleteKey == "" || t.Before(deleteTime) {
+			deleteKey = key
+			deleteTime = t
+		}
+	}
+	if deleteKey != "" {
+		delete(s.traces, deleteKey)
+	}
 }
 
 func (s *StatusServer) startTrace(key, target string) int {
@@ -314,7 +353,10 @@ func (s *StatusServer) snapshotTrace(key string) traceResponse {
 	return resp
 }
 
-func (s *StatusServer) jsonHandler(w http.ResponseWriter, _ *http.Request) {
+func (s *StatusServer) jsonHandler(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodGet) {
+		return
+	}
 	statuses := s.collectStatuses()
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -324,7 +366,10 @@ func (s *StatusServer) jsonHandler(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
-func (s *StatusServer) stateHandler(w http.ResponseWriter, _ *http.Request) {
+func (s *StatusServer) stateHandler(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodGet) {
+		return
+	}
 	state := ViewState{
 		View:     s.snapshotView(),
 		Statuses: s.collectStatuses(),
@@ -430,7 +475,10 @@ func (s *StatusServer) sanitizeHiddenHosts(hidden map[string]bool) map[string]bo
 	return out
 }
 
-func (s *StatusServer) textHandler(w http.ResponseWriter, _ *http.Request) {
+func (s *StatusServer) textHandler(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodGet) {
+		return
+	}
 	statuses := s.collectStatuses()
 	cols := s.columnsFromView()
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -441,7 +489,10 @@ func (s *StatusServer) textHandler(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
-func (s *StatusServer) htmlHandler(w http.ResponseWriter, _ *http.Request) {
+func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodGet) {
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Connection", "close")
@@ -1885,7 +1936,10 @@ type RTTBucket struct {
 	Count int    `json:"count"`
 }
 
-func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, _ *http.Request) {
+func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodGet) {
+		return
+	}
 	wrappers := s.repo.GetAll()
 	view := s.snapshotView()
 
@@ -2033,7 +2087,10 @@ func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, _ *http.Reques
 	json.NewEncoder(w).Encode(resp)
 }
 
-func (s *StatusServer) dashboardHtmlHandler(w http.ResponseWriter, _ *http.Request) {
+func (s *StatusServer) dashboardHtmlHandler(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodGet) {
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Connection", "close")

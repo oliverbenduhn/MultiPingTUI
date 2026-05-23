@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -291,5 +292,48 @@ func TestParseHostsInputReturnsCIDRLimitError(t *testing.T) {
 	want := []string{"192.0.2.1", "192.0.2.2", "example.com"}
 	if !sameStringSlice(hosts, want) {
 		t.Fatalf("expected %#v, got %#v", want, hosts)
+	}
+}
+
+func TestStatusServerReadHandlersRejectPost(t *testing.T) {
+	server := &StatusServer{
+		repo:          NewMemoryHostRepository(),
+		view:          ServerView{},
+		statsProvider: func(PingWrapperInterface) PWStats { return PWStats{} },
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/json", nil)
+	rec := httptest.NewRecorder()
+	server.jsonHandler(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rec.Code)
+	}
+	if allow := rec.Header().Get("Allow"); allow != http.MethodGet {
+		t.Fatalf("expected Allow GET, got %q", allow)
+	}
+}
+
+func TestStatusServerPrunesTraceStates(t *testing.T) {
+	server := &StatusServer{traces: make(map[string]*webTraceState)}
+	now := time.Now()
+	for i := 0; i < maxTraceStates; i++ {
+		key := fmt.Sprintf("old-%03d", i)
+		server.traces[key] = &webTraceState{
+			startedAt:  now.Add(time.Duration(i) * time.Second),
+			finishedAt: now.Add(time.Duration(i) * time.Second),
+		}
+	}
+
+	server.getOrCreateTraceState("new")
+
+	if len(server.traces) != maxTraceStates {
+		t.Fatalf("expected %d trace states after pruning, got %d", maxTraceStates, len(server.traces))
+	}
+	if _, ok := server.traces["new"]; !ok {
+		t.Fatal("expected new trace state to be retained")
+	}
+	if _, ok := server.traces["old-000"]; ok {
+		t.Fatal("expected oldest trace state to be pruned")
 	}
 }

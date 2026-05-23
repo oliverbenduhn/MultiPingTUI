@@ -52,8 +52,8 @@ type StatusServer struct {
 	view          ServerView
 	viewMu        sync.RWMutex
 
-	traceMu sync.RWMutex
-	traces  map[string]*webTraceState
+	traceMu     sync.RWMutex
+	traces      map[string]*webTraceState
 	globalStats *GlobalStatistics
 }
 
@@ -1856,7 +1856,7 @@ type RTTBucket struct {
 func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, _ *http.Request) {
 	wrappers := s.repo.GetAll()
 	view := s.snapshotView()
-	
+
 	visible := make([]PingWrapperInterface, 0, len(wrappers))
 	for _, w := range wrappers {
 		if !view.Hidden[w.Host()] {
@@ -1869,11 +1869,11 @@ func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, _ *http.Reques
 	offline := 0
 	neverSeen := 0
 	var totalRTT time.Duration
-	
+
 	buckets := []struct {
 		label string
 		count int
-		max   time.Duration 
+		max   time.Duration
 	}{
 		{"<5ms", 0, 5 * time.Millisecond},
 		{"5-20ms", 0, 20 * time.Millisecond},
@@ -1908,13 +1908,13 @@ func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, _ *http.Reques
 		if !seen {
 			neverSeen++
 		}
-		
+
 		hs := HostStatus{
-			Host: wrapper.Host(),
-			IP: st.iprepr,
-			Online: isOnline,
-			RTT: st.lastrtt_as_string,
-			Error: st.error_message,
+			Host:        wrapper.Host(),
+			IP:          st.iprepr,
+			Online:      isOnline,
+			RTT:         st.lastrtt_as_string,
+			Error:       st.error_message,
 			LastLossAgo: "-",
 		}
 		if st.lastrecv > 0 {
@@ -1922,7 +1922,7 @@ func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, _ *http.Reques
 		} else {
 			hs.LastReply = "never"
 		}
-		
+
 		if st.last_loss_nano > 0 {
 			hs.LastLossAgo = fmt.Sprintf("%s ago", time.Duration(now.UnixNano()-st.last_loss_nano).Round(time.Second))
 			hs.LastLossDuration = time.Duration(st.last_loss_duration).Round(time.Second / 10).String()
@@ -1941,9 +1941,9 @@ func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, _ *http.Reques
 	if len(offlineList) > 5 {
 		offlineList = offlineList[:5]
 	}
-	
+
 	sort.Slice(rttList, func(i, j int) bool {
-		return rttList[i].RTT > rttList[j].RTT 
+		return rttList[i].RTT > rttList[j].RTT
 	})
 	if len(rttList) > 5 {
 		rttList = rttList[:5]
@@ -1972,17 +1972,17 @@ func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, _ *http.Reques
 	}
 
 	resp := DashboardStats{
-		Total: total,
-		Online: online,
-		Offline: offline,
-		NeverSeen: neverSeen,
-		Uptime: uptime,
-		AvgRTT: avgRTT,
-		HealthPercent: health,
+		Total:             total,
+		Online:            online,
+		Offline:           offline,
+		NeverSeen:         neverSeen,
+		Uptime:            uptime,
+		AvgRTT:            avgRTT,
+		HealthPercent:     health,
 		RecentTransitions: transitions,
-		TopOffline: offlineList,
-		TopRTT: rttList,
-		RTTDist: dist,
+		TopOffline:        offlineList,
+		TopRTT:            rttList,
+		RTTDist:           dist,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

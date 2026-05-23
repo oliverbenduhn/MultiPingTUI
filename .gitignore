@@ -5,7 +5,11 @@ _misc
 .cache/
 .gocache/
 .gomodcache/
+*.log
+*.sha256sum
+hosts*.cfg
 mping_new
+mping
 multiping
 multiping.exe
 multipingtui

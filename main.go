@@ -196,8 +196,6 @@ func main() {
 		return
 	}
 
-	quitFlag := false
-
 	transition_writer := &TransitionWriter{}
 	if config.Log != "" {
 		if err := transition_writer.Init(config.Log); err != nil {
@@ -254,29 +252,20 @@ func main() {
 			display.SetFilter(config.OnlyOnline, config.OnlyOffline)
 			display.Start()
 			ticker := time.NewTicker(100 * time.Millisecond)
-
-			for !quitFlag {
+		displayLoop:
+			for {
 				select {
 				case <-sigChan:
-					quitFlag = true
+					break displayLoop
 				case <-ticker.C:
 					display.Update()
 				}
 			}
-
 			ticker.Stop()
 			display.Stop()
 		} else {
 			fmt.Print(VersionString())
-			ticker := time.NewTicker(100 * time.Millisecond)
-			defer ticker.Stop()
-			for !quitFlag {
-				select {
-				case <-sigChan:
-					quitFlag = true
-				case <-ticker.C:
-				}
-			}
+			<-sigChan
 		}
 		ps.Stop()
 	}

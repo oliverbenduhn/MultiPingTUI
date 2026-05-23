@@ -43,7 +43,11 @@ func (m HeaderModel) View() string {
 		rateText += " " + m.countdown
 	}
 
-	header := headerStyle.Render(fmt.Sprintf(" %s │ %s │ %s ", filterText, sortText, rateText))
+	headerText := fmt.Sprintf(" %s │ %s │ %s ", filterText, sortText, rateText)
+	if m.width > 0 && len(headerText) > m.width {
+		headerText = headerText[:m.width]
+	}
+	header := headerStyle.Render(headerText)
 	s.WriteString(header)
 	s.WriteString("\n\n")
 	return s.String()

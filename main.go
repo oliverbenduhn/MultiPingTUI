@@ -8,13 +8,15 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	probing "github.com/prometheus-community/pro-bing"
 )
 
-var Version = "v1.1.6"
+var Version = "v1.1.7"
 var CommitHash = "dev"
 var BuildTimestamp = "1970-01-01T00:00:00"
 var Builder = "go version go1.xx.y os/platform"
@@ -22,18 +24,7 @@ var DebugMode = false
 var SkipDNS = false
 var TimeoutThresholdNS int64 = int64(2 * time.Second)
 
-// Options struct is replaced by Config in config.go, but we need to keep Options for compatibility
-// with WrapperHolder.InitHosts signature if we don't change it.
-// However, I should update WrapperHolder to use Config or keep Options as an alias/adapter.
-// For now, let's adapt Config to Options or update WrapperHolder.
-// WrapperHolder.InitHosts takes Options. Let's update WrapperHolder to take Config.
-
-// But wait, I can't change WrapperHolder in this tool call.
-// I will define Options here as a type alias or just struct matching Config fields if needed,
-// OR I will update WrapperHolder in the next step.
-// Actually, I can just update main to use Config, and create an Options struct that matches what WrapperHolder expects
-// populated from Config.
-// The original Options struct had pointers.
+// Options keeps the pinger constructors independent from flag parsing.
 type Options struct {
 	quiet               *bool
 	privileged          *bool
@@ -202,7 +193,6 @@ func main() {
 		return
 	}
 
-	quitSig := make(chan bool)
 	quitFlag := false
 
 	transition_writer := &TransitionWriter{}
@@ -211,8 +201,6 @@ func main() {
 		defer transition_writer.Close()
 	}
 
-	// Adapter for WrapperHolder which expects Options with pointers
-	// This is temporary until we refactor WrapperHolder to use Config
 	options := Options{
 		quiet:               &config.Quiet,
 		privileged:          &config.Privileged,
@@ -250,47 +238,43 @@ func main() {
 		}
 		return
 	} else {
-		// Legacy display mode
-		// c := make(chan os.Signal, 1)
-		// signal.Notify(c, os.Interrupt) // os/signal removed from imports, need to add it back if we want this
-		// For now, let's just use a simple loop or fix the imports if we want graceful shutdown in legacy mode
-		// But wait, I removed os/signal import earlier.
-		// Let's just use the display logic.
-
 		ps.Start()
 
-		go func() {
-			// Fake signal handling or just wait
-			// Since I removed os/signal, I can't properly handle Ctrl+C here without adding it back.
-			// But the user might want to stop it.
-			// Let's assume the user will kill it.
-			// Or better, add os/signal back.
-			// For now, let's just run.
-		}()
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		defer signal.Stop(sigChan)
 
 		if !config.Quiet {
 			display := NewDisplay(repo)
 			display.SetFilter(config.OnlyOnline, config.OnlyOffline)
 			display.Start()
+			ticker := time.NewTicker(100 * time.Millisecond)
 
 			for !quitFlag {
-				display.Update()
-				time.Sleep(100 * time.Millisecond)
+				select {
+				case <-sigChan:
+					quitFlag = true
+				case <-ticker.C:
+					display.Update()
+				}
 			}
 
+			ticker.Stop()
 			display.Stop()
 		} else {
 			fmt.Print(VersionString())
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
 			for !quitFlag {
-				// Just keep running to gather stats (though without display it's useless unless logging)
-				time.Sleep(100 * time.Millisecond)
+				select {
+				case <-sigChan:
+					quitFlag = true
+				case <-ticker.C:
+				}
 			}
 		}
 		ps.Stop()
 	}
-
-	<-quitSig
-
 }
 
 func VersionString() string {

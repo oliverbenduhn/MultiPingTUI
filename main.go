@@ -336,6 +336,8 @@ Hint on address family can be provided with the following form:
 Notes about implementation: tcp implementation between probing (S/SA/R) and full handshake depends on the platform`)
 }
 
+const maxHostFileLines = 65536
+
 func loadHostsFromFile(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -344,8 +346,13 @@ func loadHostsFromFile(path string) ([]string, error) {
 	defer f.Close()
 
 	var hosts []string
+	lineCount := 0
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
+		lineCount++
+		if lineCount > maxHostFileLines {
+			return nil, fmt.Errorf("host file exceeds maximum of %d lines", maxHostFileLines)
+		}
 		line := strings.TrimSpace(stripYAMLComment(scanner.Text()))
 		if line == "" {
 			continue

@@ -295,9 +295,19 @@ func (s *StatusServer) pruneTraceStatesLocked(keepKey string) {
 }
 
 func (s *StatusServer) startTrace(key, target string) int {
-	st := s.getOrCreateTraceState(key)
+	// Hold the lock for the entire operation to avoid TOCTOU between
+	// getOrCreateTraceState releasing the lock and us re-acquiring it.
 	s.traceMu.Lock()
 	defer s.traceMu.Unlock()
+	if s.traces == nil {
+		s.traces = make(map[string]*webTraceState)
+	}
+	st, ok := s.traces[key]
+	if !ok {
+		st = &webTraceState{}
+		s.traces[key] = st
+		s.pruneTraceStatesLocked(key)
+	}
 	st.seq++
 	st.running = true
 	st.startedAt = time.Now()

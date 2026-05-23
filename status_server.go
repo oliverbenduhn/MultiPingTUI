@@ -106,7 +106,7 @@ func StartStatusServer(repo HostRepository, provider StatsProvider, initialView 
 	mux.HandleFunc("/state", server.stateHandler)
 	mux.HandleFunc("/trace", server.traceHandler)
 
-	listener, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return nil, err
 	}

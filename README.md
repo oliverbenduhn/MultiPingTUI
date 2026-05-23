@@ -156,7 +156,7 @@ mping -once 192.168.1.0/24
 
 ### Status Web Server
 
-In TUI mode a small status server is started on `http://0.0.0.0:8080` to mirror the current view. The web UI stays in sync with the TUI for filter/sort/visible columns (changes in either UI affect the other).
+In TUI mode a small local status server is started on `http://127.0.0.1:8080` to mirror the current view. The web UI stays in sync with the TUI for filter/sort/visible columns (changes in either UI affect the other).
 
 - `/` live HTML view (filter/sort/columns + resizable columns via mouse drag)
 - `/text` plain text summary

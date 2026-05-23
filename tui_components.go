@@ -127,7 +127,7 @@ func (m FooterModel) View() string {
 	case FooterDashboard:
 		s.WriteString(helpStyle.Render("esc: back │ d: back │ q: quit"))
 	default:
-		s.WriteString(helpStyle.Render("↑↓/jk: navigate │ enter: details │ del: hide host │ ins: show all │ d: dashboard │ e: edit config │ 1-6: columns │ q: quit"))
+		s.WriteString(helpStyle.Render("↑↓/jk: navigate │ enter: details │ del: hide host │ ins: show all │ d: dashboard │ e: edit config │ 1-6: columns │ g: group by subnet │ q: quit"))
 		s.WriteString("\n")
 		s.WriteString(helpStyle.Render("f: filter │ s: sort │ r: rate (100ms/1s/5s/30s) │ pgup/pgdn: scroll"))
 	}
@@ -147,6 +147,8 @@ type HostListModel struct {
 	hiddenHosts      map[string]bool
 	cachedWrappers   []PingWrapperInterface
 	cacheInvalidated bool
+	groupBySubnet    bool
+	rawInputs        []string
 }
 
 func NewHostListModel() HostListModel {
@@ -161,6 +163,7 @@ func NewHostListModel() HostListModel {
 		hiddenHosts:      make(map[string]bool),
 		sortMode:         SortByIP, // Default sort
 		cacheInvalidated: true,
+		groupBySubnet:    true,
 	}
 }
 

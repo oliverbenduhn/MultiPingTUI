@@ -144,6 +144,7 @@ type keyMap struct {
 	HideHost    key.Binding
 	ShowAll     key.Binding
 	CycleRate   key.Binding
+	GroupToggle key.Binding
 }
 
 var keys = keyMap{
@@ -207,6 +208,10 @@ var keys = keyMap{
 		key.WithKeys("r"),
 		key.WithHelp("r", "cycle update rate"),
 	),
+	GroupToggle: key.NewBinding(
+		key.WithKeys("g"),
+		key.WithHelp("g", "group by subnet"),
+	),
 }
 
 // Styles
@@ -214,6 +219,11 @@ var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#e5e7eb")).
+			MarginLeft(1)
+
+	subnetHeaderStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#60a5fa")).
 			MarginLeft(1)
 
 	headerStyle = lipgloss.NewStyle().
@@ -424,6 +434,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.hostsRaw = append([]string{}, settings.Hosts...)
+			m.hostList.rawInputs = append([]string{}, settings.Hosts...)
 			m.ps.ReplaceHosts(hosts)
 			m.hostList.cursor = -1
 			m.hostList.scrollOffset = 0
@@ -604,6 +615,20 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.header.updateRate = nextUpdateRate(m.header.updateRate)
 			m.setStatus(fmt.Sprintf("Update rate: %s", m.header.getUpdateRateString()))
 			// No need to restart any tickers - the time-based calculation handles everything
+			m.pushStatusView()
+			return m, nil
+
+		case key.Matches(msg, keys.GroupToggle):
+			if m.viewMode != viewList {
+				return m, nil
+			}
+			m.hostList.groupBySubnet = !m.hostList.groupBySubnet
+			if m.hostList.groupBySubnet {
+				m.setStatus("Subnet grouping enabled")
+			} else {
+				m.setStatus("Subnet grouping disabled")
+			}
+			m.hostList.cacheInvalidated = true
 			m.pushStatusView()
 			return m, nil
 
@@ -842,6 +867,12 @@ func (m *TUIModel) syncViewFromStatusServer() {
 			}
 			m.hostList.visibleColumns[i] = want[i]
 		}
+	}
+
+	if view.GroupBySubnet != m.hostList.groupBySubnet {
+		m.hostList.groupBySubnet = view.GroupBySubnet
+		m.hostList.cacheInvalidated = true
+		changed = true
 	}
 
 	if changed {
@@ -1249,11 +1280,13 @@ func (m *TUIModel) pushStatusView() {
 		return
 	}
 	m.statusServer.UpdateView(ServerView{
-		Filter: m.hostList.filterMode,
-		Sort:   m.hostList.sortMode,
-		Rate:   m.header.updateRate,
-		Hidden: cloneHiddenHosts(m.hostList.hiddenHosts),
-		Cols:   visibleColumnsList(m.hostList.visibleColumns),
+		Filter:        m.hostList.filterMode,
+		Sort:          m.hostList.sortMode,
+		Rate:          m.header.updateRate,
+		Hidden:        cloneHiddenHosts(m.hostList.hiddenHosts),
+		Cols:          visibleColumnsList(m.hostList.visibleColumns),
+		GroupBySubnet: m.hostList.groupBySubnet,
+		RawInputs:     m.hostList.rawInputs,
 	})
 }
 
@@ -1340,15 +1373,18 @@ func RunTUI(ps *PingService, repo HostRepository, tw *TransitionWriter, initialF
 
 	model := NewTUIModel(ps, repo, tw, initialFilter, globalStats)
 	model.hostsRaw = append([]string{}, initialHostsRaw...)
+	model.hostList.rawInputs = append([]string{}, initialHostsRaw...)
 	applyUserSettingsToModel(model, initialSettings)
 	var statusServer *StatusServer
 	if webPort > 0 {
 		initialView := ServerView{
-			Filter: model.hostList.filterMode,
-			Sort:   model.hostList.sortMode,
-			Rate:   model.header.updateRate,
-			Hidden: cloneHiddenHosts(model.hostList.hiddenHosts),
-			Cols:   visibleColumnsList(model.hostList.visibleColumns),
+			Filter:        model.hostList.filterMode,
+			Sort:          model.hostList.sortMode,
+			Rate:          model.header.updateRate,
+			Hidden:        cloneHiddenHosts(model.hostList.hiddenHosts),
+			Cols:          visibleColumnsList(model.hostList.visibleColumns),
+			GroupBySubnet: model.hostList.groupBySubnet,
+			RawInputs:     initialHostsRaw,
 		}
 		var err error
 		statusServer, err = StartStatusServer(repo, model.getCachedStats, initialView, webPort, globalStats)
@@ -1405,6 +1441,7 @@ func applyUserSettingsToModel(m *TUIModel, settings UserSettings) {
 	if validUpdateRate(settings.View.Rate) {
 		m.header.updateRate = settings.View.Rate
 	}
+	m.hostList.groupBySubnet = settings.View.GroupBySubnet
 
 	// Hidden: nil means "no hidden hosts".
 	if settings.View.Hidden == nil {
@@ -1440,11 +1477,12 @@ func userSettingsFromModel(m *TUIModel) UserSettings {
 		out.Hosts = []string{}
 	}
 	out.View = UserViewSettings{
-		Filter: m.hostList.filterMode,
-		Sort:   m.hostList.sortMode,
-		Rate:   m.header.updateRate,
-		Cols:   visibleColumnsList(m.hostList.visibleColumns),
-		Hidden: cloneHiddenHosts(m.hostList.hiddenHosts),
+		Filter:        m.hostList.filterMode,
+		Sort:          m.hostList.sortMode,
+		Rate:          m.header.updateRate,
+		Cols:          visibleColumnsList(m.hostList.visibleColumns),
+		Hidden:        cloneHiddenHosts(m.hostList.hiddenHosts),
+		GroupBySubnet: m.hostList.groupBySubnet,
 	}
 	return out
 }

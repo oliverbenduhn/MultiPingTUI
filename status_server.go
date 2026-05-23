@@ -26,14 +26,17 @@ type HostStatus struct {
 	LastLossAgo      string `json:"last_loss_ago,omitempty"`
 	LastLossDuration string `json:"last_loss_duration,omitempty"`
 	Error            string `json:"error,omitempty"`
+	SubnetGroup      string `json:"subnet_group,omitempty"`
 }
 
 type ServerView struct {
-	Filter FilterMode      `json:"filter"`
-	Sort   SortMode        `json:"sort"`
-	Rate   UpdateRate      `json:"rate"`
-	Hidden map[string]bool `json:"hidden"`
-	Cols   []int           `json:"cols"`
+	Filter        FilterMode      `json:"filter"`
+	Sort          SortMode        `json:"sort"`
+	Rate          UpdateRate      `json:"rate"`
+	Hidden        map[string]bool `json:"hidden"`
+	Cols          []int           `json:"cols"`
+	GroupBySubnet bool            `json:"group_by_subnet"`
+	RawInputs     []string        `json:"raw_inputs"`
 }
 
 type ViewState struct {
@@ -405,11 +408,12 @@ func (s *StatusServer) stateHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type viewPatch struct {
-	Filter *FilterMode     `json:"filter,omitempty"`
-	Sort   *SortMode       `json:"sort,omitempty"`
-	Rate   *UpdateRate     `json:"rate,omitempty"`
-	Cols   []int           `json:"cols,omitempty"`
-	Hidden map[string]bool `json:"hidden,omitempty"`
+	Filter        *FilterMode     `json:"filter,omitempty"`
+	Sort          *SortMode       `json:"sort,omitempty"`
+	Rate          *UpdateRate     `json:"rate,omitempty"`
+	Cols          []int           `json:"cols,omitempty"`
+	Hidden        map[string]bool `json:"hidden,omitempty"`
+	GroupBySubnet *bool           `json:"group_by_subnet,omitempty"`
 }
 
 const (
@@ -453,6 +457,9 @@ func (s *StatusServer) viewHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		if patch.Cols != nil {
 			s.view.Cols = normalizeColumns(patch.Cols)
+		}
+		if patch.GroupBySubnet != nil {
+			s.view.GroupBySubnet = *patch.GroupBySubnet
 		}
 		s.viewMu.Unlock()
 
@@ -713,6 +720,21 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
     }
     tbody tr.offline-row:hover {
       opacity: 0.85;
+    }
+    tbody tr.group-row {
+      background: rgba(88, 166, 255, 0.06) !important;
+      border-left: 4px solid var(--blue);
+      cursor: default;
+    }
+    tbody tr.group-row:hover {
+      background: rgba(88, 166, 255, 0.06) !important;
+    }
+    tbody tr.group-row td {
+      font-weight: 700;
+      color: var(--blue);
+      font-size: 13px;
+      letter-spacing: 0.05em;
+      padding: 10px 16px;
     }
     .status-cell {
       display: flex;
@@ -1050,6 +1072,12 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
         </select>
       </div>
       <div class="control-group">
+        <label for="group-by-subnet" style="display: flex; align-items: center; gap: 8px; cursor: pointer; text-transform: none;">
+          <input type="checkbox" id="group-by-subnet" style="width: 14px; height: 14px; accent-color: var(--blue);" aria-label="Group hosts by subnet">
+          Group by Subnet
+        </label>
+      </div>
+      <div class="control-group">
         <label>Columns</label>
         <div class="cols" id="cols"></div>
       </div>
@@ -1145,6 +1173,9 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
 	      }
 	      if (typeof view.sort === 'number') {
 	        sortEl.value = String(view.sort);
+	      }
+	      if (typeof view.group_by_subnet === 'boolean') {
+	        document.querySelector('#group-by-subnet').checked = view.group_by_subnet;
 	      }
 
       const cols = normalizeCols(view.cols);
@@ -1477,93 +1508,81 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
     
             const data = state.statuses || [];
             
-            const existingRows = new Map();
-            tbody.querySelectorAll('tr').forEach((tr) => {
-              if (tr.dataset.key) existingRows.set(tr.dataset.key, tr);
-            });
-            
-            const newKeys = new Set();
-    
+            // Calculate group totals for dynamic headers
+            const groupTotals = {};
+            const groupOnline = {};
             for (const row of data) {
-              const key = row.key;
-              newKeys.add(key);
-              
-              let tr = existingRows.get(key);
-              if (!tr) {
-                tr = document.createElement('tr');
-                tr.dataset.key = key;
-                // Create cells initially
-                columns.forEach(col => {
-                    const td = document.createElement('td');
-                    td.dataset.col = col;
-                    tr.appendChild(td);
-                });
-                tbody.appendChild(tr);
-              } else {
-                 // Check if columns changed
-                 const currentCells = tr.querySelectorAll('td');
-                 if (currentCells.length !== columns.length) {
-                     tr.innerHTML = '';
-                     columns.forEach(col => {
-                        const td = document.createElement('td');
-                        td.dataset.col = col;
-                        tr.appendChild(td);
-                     });
-                 }
+              if (row.subnet_group) {
+                const g = row.subnet_group;
+                groupTotals[g] = (groupTotals[g] || 0) + 1;
+                if (row.online) {
+                  groupOnline[g] = (groupOnline[g] || 0) + 1;
+                }
               }
-    
+            }
+
+            tbody.innerHTML = '';
+            let lastGroup = null;
+
+            for (const row of data) {
+              if (view.group_by_subnet && row.subnet_group) {
+                const g = row.subnet_group;
+                if (g !== lastGroup) {
+                  const headerTr = document.createElement('tr');
+                  headerTr.className = 'group-row';
+                  const td = document.createElement('td');
+                  td.colSpan = columns.length;
+                  const online = groupOnline[g] || 0;
+                  const total = groupTotals[g] || 0;
+                  td.textContent = g + ' (' + online + '/' + total + ' Online)';
+                  headerTr.appendChild(td);
+                  tbody.appendChild(headerTr);
+                  lastGroup = g;
+                }
+              }
+
+              const tr = document.createElement('tr');
+              tr.dataset.key = row.key;
               if (!row.online) {
                 tr.className = 'offline-row';
-              } else {
-                tr.className = '';
               }
-    
-              const cells = tr.querySelectorAll('td');
-              
-              columns.forEach((col, idx) => {
-                const td = cells[idx];
-                if (!td) return; // Should not happen given logic above
-    
+
+              columns.forEach((col) => {
+                const td = document.createElement('td');
+                td.dataset.col = col;
+
                 let newVal = '';
                 let newClass = '';
-                
-                // Calculate new content
+
                 if (col === 1) {
-                     newVal = row.online
-                      ? '<div class="status-cell"><span class="status-badge online">● Online</span></div>'
-                      : '<div class="status-cell"><span class="status-badge offline">○ Offline</span></div>';
+                  newVal = row.online
+                    ? '<div class="status-cell"><span class="status-badge online">● Online</span></div>'
+                    : '<div class="status-cell"><span class="status-badge offline">○ Offline</span></div>';
                 } else if (col === 2) {
-                     newClass = 'name-cell';
-                     newVal = escapeHtml(row.host || '-');
+                  newClass = 'name-cell';
+                  newVal = escapeHtml(row.host || '-');
                 } else if (col === 3) {
-                     newClass = 'ip-cell';
-                     newVal = escapeHtml(row.ip || '-');
+                  newClass = 'ip-cell';
+                  newVal = escapeHtml(row.ip || '-');
                 } else if (col === 4) {
-                     if (row.online && (row.rtt || '-') !== '-') {
-                        newVal = '<div class="rtt-cell"><span class="rtt-value">' + escapeHtml(row.rtt) + '</span>' + createRTTBar(parseRTT(row.rtt)) + '</div>';
-                     } else {
-                        newVal = '-';
-                     }
+                  if (row.online && (row.rtt || '-') !== '-') {
+                    newVal = '<div class="rtt-cell"><span class="rtt-value">' + escapeHtml(row.rtt) + '</span>' + createRTTBar(parseRTT(row.rtt)) + '</div>';
+                  } else {
+                    newVal = '-';
+                  }
                 } else if (col === 5) {
-                     newVal = escapeHtml(row.last_reply || '-');
+                  newVal = escapeHtml(row.last_reply || '-');
                 } else if (col === 6) {
-                     newVal = row.last_loss_ago ? escapeHtml(row.last_loss_ago + ' (' + row.last_loss_duration + ')') : '-';
+                  newVal = row.last_loss_ago ? escapeHtml(row.last_loss_ago + ' (' + row.last_loss_duration + ')') : '-';
                 }
-                
-                // Apply updates only if changed
-                if (td.className !== newClass) td.className = newClass;
-                
-                // For simple text columns, use textContent to be faster, but we have HTML in col 1 and 4.
-                // To be safe and simple, we use innerHTML comparison.
-                if (td.innerHTML !== newVal) {
-                    td.innerHTML = newVal;
-                }
+
+                if (newClass) td.className = newClass;
+                td.innerHTML = newVal;
+                tr.appendChild(td);
               });
+
+              tbody.appendChild(tr);
             }
-    
-            existingRows.forEach((tr, key) => {
-              if (!newKeys.has(key)) tr.remove();
-            });
     
             if (selectedKey) {
               const match = data.find((r) => r.key === selectedKey);
@@ -1610,6 +1629,14 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
       await refresh();
     });
 
+    const groupBySubnetEl = document.querySelector('#group-by-subnet');
+    groupBySubnetEl.addEventListener('change', async () => {
+      const group_by_subnet = groupBySubnetEl.checked;
+      syncPill.textContent = 'updating…';
+      await updateView({group_by_subnet});
+      await refresh();
+    });
+
     tbody.addEventListener('click', (e) => {
       const cell = e.target && e.target.closest ? e.target.closest('td.name-cell') : null;
       if (!cell) return;
@@ -1644,6 +1671,11 @@ func (s *StatusServer) collectStatuses() []HostStatus {
 	statuses := make([]HostStatus, 0, len(filtered))
 	now := time.Now()
 
+	var subnets []subnetGroup
+	if view.GroupBySubnet {
+		subnets = extractSubnets(view.RawInputs)
+	}
+
 	for _, wrapper := range filtered {
 		stats := s.statsProvider(wrapper)
 
@@ -1673,6 +1705,11 @@ func (s *StatusServer) collectStatuses() []HostStatus {
 			lastLossDuration = time.Duration(stats.last_loss_duration).Round(time.Second / 10).String()
 		}
 
+		var subnetGroup string
+		if len(subnets) > 0 {
+			subnetGroup = getHostGroup(wrapper.Host(), stats.iprepr, subnets)
+		}
+
 		statuses = append(statuses, HostStatus{
 			Key:              key,
 			Host:             host,
@@ -1684,6 +1721,7 @@ func (s *StatusServer) collectStatuses() []HostStatus {
 			LastLossAgo:      lastLossAgo,
 			LastLossDuration: lastLossDuration,
 			Error:            stats.error_message,
+			SubnetGroup:      subnetGroup,
 		})
 	}
 
@@ -1705,11 +1743,13 @@ func (s *StatusServer) snapshotView() ServerView {
 	s.viewMu.RLock()
 	defer s.viewMu.RUnlock()
 	copied := ServerView{
-		Filter: s.view.Filter,
-		Sort:   s.view.Sort,
-		Rate:   s.view.Rate,
-		Hidden: make(map[string]bool, len(s.view.Hidden)),
-		Cols:   append([]int{}, s.view.Cols...),
+		Filter:        s.view.Filter,
+		Sort:          s.view.Sort,
+		Rate:          s.view.Rate,
+		Hidden:        make(map[string]bool, len(s.view.Hidden)),
+		Cols:          append([]int{}, s.view.Cols...),
+		GroupBySubnet: s.view.GroupBySubnet,
+		RawInputs:     append([]string{}, s.view.RawInputs...),
 	}
 	for k, v := range s.view.Hidden {
 		copied.Hidden[k] = v
@@ -1808,7 +1848,39 @@ func marshalColumns(cols []int) string {
 }
 
 func (s *StatusServer) filterAndSort(wrappers []PingWrapperInterface, view ServerView) []PingWrapperInterface {
-	return applyFilterAndSort(wrappers, view.Filter, view.Sort, view.Hidden, s.statsProvider)
+	filtered := applyFilterAndSort(wrappers, view.Filter, view.Sort, view.Hidden, s.statsProvider)
+
+	if view.GroupBySubnet {
+		subnets := extractSubnets(view.RawInputs)
+		if len(subnets) > 0 {
+			groupMap := make(map[string][]PingWrapperInterface)
+			for _, wrapper := range filtered {
+				stats := s.statsProvider(wrapper)
+				g := getHostGroup(wrapper.Host(), stats.iprepr, subnets)
+				groupMap[g] = append(groupMap[g], wrapper)
+			}
+
+			for _, gHosts := range groupMap {
+				sortWrappersSliceGeneric(gHosts, view.Sort, s.statsProvider)
+			}
+
+			var orderedGroups []string
+			for _, sub := range subnets {
+				orderedGroups = append(orderedGroups, sub.CIDRStr)
+			}
+			orderedGroups = append(orderedGroups, "Standalone Hosts")
+
+			var flattened []PingWrapperInterface
+			for _, gName := range orderedGroups {
+				if gHosts, ok := groupMap[gName]; ok {
+					flattened = append(flattened, gHosts...)
+				}
+			}
+			filtered = flattened
+		}
+	}
+
+	return filtered
 }
 
 type DashboardStats struct {

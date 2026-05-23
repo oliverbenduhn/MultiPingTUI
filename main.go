@@ -239,11 +239,13 @@ func main() {
 
 		// Build initial view from user settings
 		initialView := ServerView{
-			Filter: userSettings.View.Filter,
-			Sort:   userSettings.View.Sort,
-			Rate:   userSettings.View.Rate,
-			Hidden: cloneHiddenHosts(userSettings.View.Hidden),
-			Cols:   append([]int{}, userSettings.View.Cols...),
+			Filter:        userSettings.View.Filter,
+			Sort:          userSettings.View.Sort,
+			Rate:          userSettings.View.Rate,
+			Hidden:        cloneHiddenHosts(userSettings.View.Hidden),
+			Cols:          append([]int{}, userSettings.View.Cols...),
+			GroupBySubnet: userSettings.View.GroupBySubnet,
+			RawInputs:     append([]string{}, userSettings.Hosts...),
 		}
 
 		statsProvider := func(pw PingWrapperInterface) PWStats {
@@ -276,6 +278,7 @@ func main() {
 		userSettings.View.Rate = finalView.Rate
 		userSettings.View.Cols = append([]int{}, finalView.Cols...)
 		userSettings.View.Hidden = cloneHiddenHosts(finalView.Hidden)
+		userSettings.View.GroupBySubnet = finalView.GroupBySubnet
 		_ = SaveUserSettings(userSettings)
 
 		statusServer.Stop()

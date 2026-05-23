@@ -23,6 +23,7 @@ type UserViewSettings struct {
 	Rate   UpdateRate      `json:"rate"`
 	Cols   []int           `json:"cols"`
 	Hidden map[string]bool `json:"hidden"`
+	GroupBySubnet bool    `json:"group_by_subnet"`
 }
 
 func DefaultUserSettings() UserSettings {
@@ -34,6 +35,7 @@ func DefaultUserSettings() UserSettings {
 			Rate:   UpdateRate1s,
 			Cols:   []int{1, 2, 3, 4, 5, 6},
 			Hidden: map[string]bool{},
+			GroupBySubnet: true,
 		},
 	}
 }
@@ -233,6 +235,10 @@ func parseUserSettings(b []byte) (UserSettings, error) {
 				}
 			case "cols":
 				settings.View.Cols = parseYAMLIntList(v)
+			case "group_by_subnet":
+				if bVal, ok := parseYAMLBool(v); ok {
+					settings.View.GroupBySubnet = bVal
+				}
 			case "hidden":
 				// handled via subsection, but accept inline object as JSON/YAML-flow ("{}" or {"a":true}).
 				if strings.TrimSpace(v) == "{}" {
@@ -295,6 +301,7 @@ func marshalUserSettingsYAML(settings UserSettings) []byte {
 	b.WriteString(fmt.Sprintf("  filter: %d\n", settings.View.Filter))
 	b.WriteString(fmt.Sprintf("  sort: %d\n", settings.View.Sort))
 	b.WriteString(fmt.Sprintf("  rate: %d\n", settings.View.Rate))
+	b.WriteString(fmt.Sprintf("  group_by_subnet: %t\n", settings.View.GroupBySubnet))
 
 	b.WriteString("  cols: [")
 	for i, c := range settings.View.Cols {

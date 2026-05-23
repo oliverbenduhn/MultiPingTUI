@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 	"time"
@@ -227,98 +228,166 @@ shrinkColumns:
 		visibleLines = 1
 	}
 
-	start := m.scrollOffset
-	end := m.scrollOffset + visibleLines
-	if end > len(wrappers) {
-		end = len(wrappers)
+	// Build all renderable rows
+	var rows []renderRow
+	var lastGroup string
+	subnets := extractSubnets(m.rawInputs)
+
+	if m.groupBySubnet && len(subnets) > 0 {
+		for idx, w := range wrappers {
+			stats := getCachedStats(w)
+			g := getHostGroup(w.Host(), stats.iprepr, subnets)
+			if g != lastGroup {
+				rows = append(rows, renderRow{
+					isHeader:  true,
+					groupName: g,
+					hostIndex: -1,
+				})
+				lastGroup = g
+			}
+			rows = append(rows, renderRow{
+				isHeader:  false,
+				groupName: g,
+				hostIndex: idx,
+			})
+		}
+	} else {
+		for idx := range wrappers {
+			rows = append(rows, renderRow{
+				isHeader:  false,
+				hostIndex: idx,
+			})
+		}
 	}
 
-	// Render only visible items
-	for i := start; i < end; i++ {
-		wrapper := wrappers[i]
-		stats := getCachedStats(wrapper)
-		isOnline := stats.state && stats.error_message == ""
-
-		// Column values
-		status := "✓"
-		if !isOnline {
-			status = "✗"
-		}
-
-		name := stats.GetHostRepr()
-		if name == "" {
-			name = wrapper.Host()
-		}
-		name = truncateDisplay(name, nameWidth)
-
-		ip := stats.iprepr
-		if ip == "" {
-			ip = "-"
-		}
-		ip = truncateDisplay(ip, ipWidth)
-
-		rtt := stats.lastrtt_as_string
-		if !isOnline {
-			rtt = "-"
-		}
-
-		// Only show last reply when host is offline to avoid clutter for healthy hosts
-		lastReply := "-"
-		if !isOnline {
-			if stats.lastrecv > 0 {
-				lastReply = time.Duration(stats.last_seen_nano).Round(time.Second).String() + " ago"
-			} else {
-				lastReply = "never"
+	// Calculate group totals for live stats header
+	groupTotals := make(map[string]int)
+	groupOnline := make(map[string]int)
+	if m.groupBySubnet && len(subnets) > 0 {
+		for _, w := range wrappers {
+			stats := getCachedStats(w)
+			g := getHostGroup(w.Host(), stats.iprepr, subnets)
+			groupTotals[g]++
+			isOnline := stats.state && stats.error_message == ""
+			if isOnline {
+				groupOnline[g]++
 			}
 		}
+	}
 
-		lastLoss := "-"
-		if stats.last_loss_nano > 0 {
-			lastLoss = fmt.Sprintf("%s ago (%s)",
-				time.Duration(time.Now().UnixNano()-stats.last_loss_nano).Round(time.Second),
-				time.Duration(stats.last_loss_duration).Round(time.Second/10))
-		}
+	// Adjust scroll offset dynamically based on dynamic headers
+	m.adjustScrollForRows(rows)
 
-		// Build line based on visible columns with dynamic widths
-		var lineParts []string
-		if visibleCols[1] {
-			lineParts = append(lineParts, displayPad(status, statusWidth))
-		}
-		if visibleCols[2] {
-			lineParts = append(lineParts, displayPad(name, nameWidth))
-		}
-		if visibleCols[3] {
-			lineParts = append(lineParts, displayPad(ip, ipWidth))
-		}
-		if visibleCols[4] {
-			lineParts = append(lineParts, displayPad(rtt, rttWidth))
-		}
-		if visibleCols[5] {
-			lineParts = append(lineParts, displayPad(lastReply, lastReplyWidth))
-		}
-		if visibleCols[6] {
-			lineParts = append(lineParts, truncateDisplay(lastLoss, lastLossWidth))
-		}
+	start := m.scrollOffset
+	end := m.scrollOffset + visibleLines
+	if end > len(rows) {
+		end = len(rows)
+	}
 
-		line := strings.Join(lineParts, " ")
-
-		if i == m.cursor && m.cursor >= 0 {
-			line = selectedStyle.Render(line)
-		} else if isOnline && stats.last_up_transition > 0 && now-stats.last_up_transition < int64(20*time.Second) {
-			line = newOnlineStyle.Render(line)
-		} else if isOnline {
-			line = onlineStyle.Render(line)
+	// Render only visible rows (either headers or hosts)
+	for i := start; i < end; i++ {
+		row := rows[i]
+		if row.isHeader {
+			// Render beautiful group header row!
+			online := groupOnline[row.groupName]
+			total := groupTotals[row.groupName]
+			
+			headerText := fmt.Sprintf("%s (%d/%d Online) ", row.groupName, online, total)
+			textLen := runewidth.StringWidth(headerText)
+			
+			lineLen := m.width - 4 - textLen
+			if lineLen < 5 {
+				lineLen = 5
+			}
+			line := headerText + strings.Repeat("─", lineLen)
+			s.WriteString(subnetHeaderStyle.Render(line))
+			s.WriteString("\n")
 		} else {
-			line = offlineStyle.Render(line)
-		}
+			wrapper := wrappers[row.hostIndex]
+			stats := getCachedStats(wrapper)
+			isOnline := stats.state && stats.error_message == ""
 
-		s.WriteString(line)
-		s.WriteString("\n")
+			// Column values
+			status := "✓"
+			if !isOnline {
+				status = "✗"
+			}
+
+			name := stats.GetHostRepr()
+			if name == "" {
+				name = wrapper.Host()
+			}
+			name = truncateDisplay(name, nameWidth)
+
+			ip := stats.iprepr
+			if ip == "" {
+				ip = "-"
+			}
+			ip = truncateDisplay(ip, ipWidth)
+
+			rtt := stats.lastrtt_as_string
+			if !isOnline {
+				rtt = "-"
+			}
+
+			// Only show last reply when host is offline to avoid clutter for healthy hosts
+			lastReply := "-"
+			if !isOnline {
+				if stats.lastrecv > 0 {
+					lastReply = time.Duration(stats.last_seen_nano).Round(time.Second).String() + " ago"
+				} else {
+					lastReply = "never"
+				}
+			}
+
+			lastLoss := "-"
+			if stats.last_loss_nano > 0 {
+				lastLoss = fmt.Sprintf("%s ago (%s)",
+					time.Duration(time.Now().UnixNano()-stats.last_loss_nano).Round(time.Second),
+					time.Duration(stats.last_loss_duration).Round(time.Second/10))
+			}
+
+			// Build line based on visible columns with dynamic widths
+			var lineParts []string
+			if visibleCols[1] {
+				lineParts = append(lineParts, displayPad(status, statusWidth))
+			}
+			if visibleCols[2] {
+				lineParts = append(lineParts, displayPad(name, nameWidth))
+			}
+			if visibleCols[3] {
+				lineParts = append(lineParts, displayPad(ip, ipWidth))
+			}
+			if visibleCols[4] {
+				lineParts = append(lineParts, displayPad(rtt, rttWidth))
+			}
+			if visibleCols[5] {
+				lineParts = append(lineParts, displayPad(lastReply, lastReplyWidth))
+			}
+			if visibleCols[6] {
+				lineParts = append(lineParts, truncateDisplay(lastLoss, lastLossWidth))
+			}
+
+			line := strings.Join(lineParts, " ")
+
+			if row.hostIndex == m.cursor && m.cursor >= 0 {
+				line = selectedStyle.Render(line)
+			} else if isOnline && stats.last_up_transition > 0 && now-stats.last_up_transition < int64(20*time.Second) {
+				line = newOnlineStyle.Render(line)
+			} else if isOnline {
+				line = onlineStyle.Render(line)
+			} else {
+				line = offlineStyle.Render(line)
+			}
+
+			s.WriteString(line)
+			s.WriteString("\n")
+		}
 	}
 
 	// Show scroll indicator if needed
-	if len(wrappers) > visibleLines {
-		totalItems := len(wrappers)
+	if len(rows) > visibleLines {
+		totalItems := len(rows)
 		scrollInfo := fmt.Sprintf(" [%d-%d/%d] ", start+1, end, totalItems)
 		s.WriteString(helpStyle.Render(scrollInfo))
 	}
@@ -327,25 +396,51 @@ shrinkColumns:
 }
 
 func (m *HostListModel) adjustScroll() {
+	// Refined dynamically on-the-fly inside renderListView to support dynamic group headers
+}
+
+func (m *HostListModel) adjustScrollForRows(rows []renderRow) {
 	if m.cursor < 0 {
+		m.scrollOffset = 0
 		return
 	}
 
-	// Calculate available height for list items
-	// height - title(1) - header(1) - spacing(1) - table_header(1) - separator(1) - help(2) = height - 7
 	visibleLines := m.height - 7
 	if visibleLines < 1 {
 		visibleLines = 1
 	}
 
-	// Scroll up if cursor is above visible area
-	if m.cursor < m.scrollOffset {
-		m.scrollOffset = m.cursor
+	// Find the cursor's index in the rows slice
+	cursorRowIdx := -1
+	for idx, r := range rows {
+		if !r.isHeader && r.hostIndex == m.cursor {
+			cursorRowIdx = idx
+			break
+		}
 	}
 
-	// Scroll down if cursor is below visible area
-	if m.cursor >= m.scrollOffset+visibleLines {
-		m.scrollOffset = m.cursor - visibleLines + 1
+	if cursorRowIdx == -1 {
+		m.scrollOffset = 0
+		return
+	}
+
+	// Adjust scrollOffset to keep cursorRowIdx in view
+	if cursorRowIdx < m.scrollOffset {
+		m.scrollOffset = cursorRowIdx
+	} else if cursorRowIdx >= m.scrollOffset+visibleLines {
+		m.scrollOffset = cursorRowIdx - visibleLines + 1
+	}
+
+	// Clamp scrollOffset
+	maxOffset := len(rows) - visibleLines
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.scrollOffset > maxOffset {
+		m.scrollOffset = maxOffset
+	}
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
 	}
 }
 
@@ -385,50 +480,138 @@ func (m *HostListModel) getFilteredWrappers(wrappers []PingWrapperInterface, get
 		}
 	}
 
-	// Sort
-	switch m.sortMode {
+	// Sort & Group
+	if m.groupBySubnet {
+		subnets := extractSubnets(m.rawInputs)
+		if len(subnets) > 0 {
+			// Partition by group
+			groupMap := make(map[string][]PingWrapperInterface)
+			for _, wrapper := range filtered {
+				stats := getCachedStats(wrapper)
+				g := getHostGroup(wrapper.Host(), stats.iprepr, subnets)
+				groupMap[g] = append(groupMap[g], wrapper)
+			}
+
+			// Sort each group individually
+			for _, gHosts := range groupMap {
+				m.sortWrappersSlice(gHosts, getCachedStats)
+			}
+
+			// Gather groups in order
+			var orderedGroups []string
+			for _, sub := range subnets {
+				orderedGroups = append(orderedGroups, sub.CIDRStr)
+			}
+			orderedGroups = append(orderedGroups, "Standalone Hosts")
+
+			// Flatten back into filtered slice
+			var flattened []PingWrapperInterface
+			for _, gName := range orderedGroups {
+				if gHosts, ok := groupMap[gName]; ok {
+					flattened = append(flattened, gHosts...)
+				}
+			}
+			filtered = flattened
+		} else {
+			m.sortWrappersSlice(filtered, getCachedStats)
+		}
+	} else {
+		m.sortWrappersSlice(filtered, getCachedStats)
+	}
+
+	// Update cache
+	m.cachedWrappers = filtered
+	m.cacheInvalidated = false
+
+	return filtered
+}
+
+func (m *HostListModel) sortWrappersSlice(slice []PingWrapperInterface, getCachedStats func(PingWrapperInterface) PWStats) {
+	sortWrappersSliceGeneric(slice, m.sortMode, getCachedStats)
+}
+
+func applyFilterAndSort(
+	wrappers []PingWrapperInterface,
+	filter FilterMode,
+	sortMode SortMode,
+	hidden map[string]bool,
+	getCachedStats func(PingWrapperInterface) PWStats,
+) []PingWrapperInterface {
+	var filtered []PingWrapperInterface
+
+	for _, wrapper := range wrappers {
+		if hidden[wrapper.Host()] {
+			continue
+		}
+
+		stats := getCachedStats(wrapper)
+		isOnline := stats.state && stats.error_message == ""
+		seen := stats.has_ever_received
+
+		switch filter {
+		case FilterAll:
+			filtered = append(filtered, wrapper)
+		case FilterSmart:
+			if isOnline || seen {
+				filtered = append(filtered, wrapper)
+			}
+		case FilterOnline:
+			if isOnline {
+				filtered = append(filtered, wrapper)
+			}
+		case FilterOffline:
+			if !isOnline {
+				filtered = append(filtered, wrapper)
+			}
+		}
+	}
+
+	sortWrappersSliceGeneric(filtered, sortMode, getCachedStats)
+
+	return filtered
+}
+
+func sortWrappersSliceGeneric(slice []PingWrapperInterface, sortMode SortMode, getCachedStats func(PingWrapperInterface) PWStats) {
+	switch sortMode {
 	case SortByName:
-		sort.Slice(filtered, func(i, j int) bool {
-			statsI := getCachedStats(filtered[i])
-			statsJ := getCachedStats(filtered[j])
+		sort.Slice(slice, func(i, j int) bool {
+			statsI := getCachedStats(slice[i])
+			statsJ := getCachedStats(slice[j])
 			onlineI := statsI.state && statsI.error_message == ""
 			onlineJ := statsJ.state && statsJ.error_message == ""
 
-			// Push hosts without recent replies to the end
 			if onlineI != onlineJ {
 				return onlineI
 			}
 
-			// Use DNS name (hrepr) if available, otherwise use Host()
 			nameI := statsI.GetHostRepr()
 			nameJ := statsJ.GetHostRepr()
 			if nameI == "" {
-				nameI = filtered[i].Host()
+				nameI = slice[i].Host()
 			}
 			if nameJ == "" {
-				nameJ = filtered[j].Host()
+				nameJ = slice[j].Host()
 			}
 			return nameI < nameJ
 		})
 	case SortByStatus:
-		sort.Slice(filtered, func(i, j int) bool {
-			statsI := getCachedStats(filtered[i])
-			statsJ := getCachedStats(filtered[j])
+		sort.Slice(slice, func(i, j int) bool {
+			statsI := getCachedStats(slice[i])
+			statsJ := getCachedStats(slice[j])
 			onlineI := statsI.state && statsI.error_message == ""
 			onlineJ := statsJ.state && statsJ.error_message == ""
 			if onlineI != onlineJ {
 				return onlineI
 			}
-			return filtered[i].Host() < filtered[j].Host()
+			return slice[i].Host() < slice[j].Host()
 		})
 	case SortByRTT:
-		sort.Slice(filtered, func(i, j int) bool {
-			statsI := getCachedStats(filtered[i])
-			statsJ := getCachedStats(filtered[j])
+		sort.Slice(slice, func(i, j int) bool {
+			statsI := getCachedStats(slice[i])
+			statsJ := getCachedStats(slice[j])
 			onlineI := statsI.state && statsI.error_message == ""
 			onlineJ := statsJ.state && statsJ.error_message == ""
 
-			// Push hosts without recent replies to the end
 			if onlineI != onlineJ {
 				return onlineI
 			}
@@ -436,21 +619,19 @@ func (m *HostListModel) getFilteredWrappers(wrappers []PingWrapperInterface, get
 			return statsI.lastrtt < statsJ.lastrtt
 		})
 	case SortByLastSeen:
-		sort.Slice(filtered, func(i, j int) bool {
-			statsI := getCachedStats(filtered[i])
-			statsJ := getCachedStats(filtered[j])
+		sort.Slice(slice, func(i, j int) bool {
+			statsI := getCachedStats(slice[i])
+			statsJ := getCachedStats(slice[j])
 			onlineI := statsI.state && statsI.error_message == ""
 			onlineJ := statsJ.state && statsJ.error_message == ""
 
-			// Offline hosts first, then online hosts
 			if onlineI != onlineJ {
-				return !onlineI // offline (false) comes before online (true)
+				return !onlineI
 			}
 
-			// Among offline hosts: never received replies go last
 			if !onlineI && !onlineJ {
 				if statsI.lastrecv == 0 && statsJ.lastrecv == 0 {
-					return filtered[i].Host() < filtered[j].Host()
+					return slice[i].Host() < slice[j].Host()
 				}
 				if statsI.lastrecv == 0 {
 					return false
@@ -458,36 +639,32 @@ func (m *HostListModel) getFilteredWrappers(wrappers []PingWrapperInterface, get
 				if statsJ.lastrecv == 0 {
 					return true
 				}
-				// Both have received before: sort by last_loss_nano (most recent problem first)
 				return statsI.last_loss_nano > statsJ.last_loss_nano
 			}
 
-			// Among online hosts: sort by whether they ever had a loss
 			hasLossI := statsI.last_loss_nano > 0
 			hasLossJ := statsJ.last_loss_nano > 0
 			if hasLossI != hasLossJ {
-				return hasLossI // hosts with past issues first
+				return hasLossI
 			}
 			if hasLossI && hasLossJ {
-				// Both had losses: sort by most recent loss
 				return statsI.last_loss_nano > statsJ.last_loss_nano
 			}
 
-			// Both are stable online hosts with no history of loss: sort by name
 			nameI := statsI.GetHostRepr()
 			nameJ := statsJ.GetHostRepr()
 			if nameI == "" {
-				nameI = filtered[i].Host()
+				nameI = slice[i].Host()
 			}
 			if nameJ == "" {
-				nameJ = filtered[j].Host()
+				nameJ = slice[j].Host()
 			}
 			return nameI < nameJ
 		})
 	case SortByIP:
-		sort.Slice(filtered, func(i, j int) bool {
-			statsI := getCachedStats(filtered[i])
-			statsJ := getCachedStats(filtered[j])
+		sort.Slice(slice, func(i, j int) bool {
+			statsI := getCachedStats(slice[i])
+			statsJ := getCachedStats(slice[j])
 			keyI := ipKey(statsI.iprepr)
 			keyJ := ipKey(statsJ.iprepr)
 			if keyI != nil && keyJ != nil && !bytes.Equal(keyI, keyJ) {
@@ -499,15 +676,75 @@ func (m *HostListModel) getFilteredWrappers(wrappers []PingWrapperInterface, get
 			if keyI == nil && keyJ != nil {
 				return false
 			}
-			return filtered[i].Host() < filtered[j].Host()
+			return slice[i].Host() < slice[j].Host()
 		})
 	}
+}
 
-	// Update cache
-	m.cachedWrappers = filtered
-	m.cacheInvalidated = false
+type subnetGroup struct {
+	CIDRStr string
+	IPNet   *net.IPNet
+}
 
-	return filtered
+type renderRow struct {
+	isHeader   bool
+	groupName  string
+	hostIndex  int
+}
+
+func extractSubnets(rawInputs []string) []subnetGroup {
+	var subnets []subnetGroup
+	for _, input := range rawInputs {
+		trimmed := strings.TrimSpace(input)
+		if trimmed == "" {
+			continue
+		}
+		_, ipnet, err := net.ParseCIDR(trimmed)
+		if err == nil && ipnet != nil {
+			duplicate := false
+			for _, s := range subnets {
+				if s.CIDRStr == trimmed {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				subnets = append(subnets, subnetGroup{
+					CIDRStr: trimmed,
+					IPNet:   ipnet,
+				})
+			}
+		}
+	}
+	return subnets
+}
+
+func getHostGroup(host string, iprepr string, subnets []subnetGroup) string {
+	if len(subnets) == 0 {
+		return ""
+	}
+
+	if iprepr != "" {
+		ip := net.ParseIP(iprepr)
+		if ip != nil {
+			for _, sub := range subnets {
+				if sub.IPNet.Contains(ip) {
+					return sub.CIDRStr
+				}
+			}
+		}
+	}
+
+	ip := net.ParseIP(host)
+	if ip != nil {
+		for _, sub := range subnets {
+			if sub.IPNet.Contains(ip) {
+				return sub.CIDRStr
+			}
+		}
+	}
+
+	return "Standalone Hosts"
 }
 
 func (m *HostListModel) getColumnName(colNum int) string {

@@ -16,7 +16,7 @@ import (
 	probing "github.com/prometheus-community/pro-bing"
 )
 
-var Version = "v1.1.7"
+var Version = "v1.1.8"
 var CommitHash = "dev"
 var BuildTimestamp = "1970-01-01T00:00:00"
 var Builder = "go version go1.xx.y os/platform"

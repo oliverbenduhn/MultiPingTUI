@@ -31,12 +31,13 @@ func NewGlobalStatistics() *GlobalStatistics {
 func (s *GlobalStatistics) AddTransition(event TransitionEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Prepend
-	s.RecentTransitions = append([]TransitionEvent{event}, s.RecentTransitions...)
-	// Keep last 50
-	if len(s.RecentTransitions) > 50 {
-		s.RecentTransitions = s.RecentTransitions[:50]
+	// Prepend in-place to avoid allocating a new slice on every transition.
+	// Grow up to capacity 50, then shift existing entries right and insert at head.
+	if len(s.RecentTransitions) < cap(s.RecentTransitions) {
+		s.RecentTransitions = s.RecentTransitions[:len(s.RecentTransitions)+1]
 	}
+	copy(s.RecentTransitions[1:], s.RecentTransitions)
+	s.RecentTransitions[0] = event
 }
 
 func (s *GlobalStatistics) GetTransitions(limit int) []TransitionEvent {

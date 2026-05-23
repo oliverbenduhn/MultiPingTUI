@@ -1101,7 +1101,12 @@ func (m *TUIModel) renderDashboardView() string {
 	if total > 0 {
 		pct = (float64(countOnline) / float64(total)) * 100
 	}
-	barWidth := 30
+	barWidth := m.hostList.width / 4
+	if barWidth < 20 {
+		barWidth = 20
+	} else if barWidth > 50 {
+		barWidth = 50
+	}
 	filled := 0
 	if total > 0 {
 		filled = int((float64(countOnline) / float64(total)) * float64(barWidth))

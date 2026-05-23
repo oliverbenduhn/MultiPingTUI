@@ -1081,6 +1081,7 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
     let refreshIntervalMs = 1000;
     let selectedKey = null;
     let traceTimer = null;
+    let currentColCount = 6;
     let lastTrace = null;
 
     const WIDTHS_KEY = 'mping.columnWidths.v1';
@@ -1445,6 +1446,7 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
             const state = await res.json();
             const view = state.view || {};
             const columns = normalizeCols(view.cols || initialColumns);
+            currentColCount = columns.length;
             renderTableStructure(columns);
             renderControls(view);
             const desiredInterval = rateToMs(view.rate);
@@ -1550,7 +1552,7 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
             renderUpdated('Connected');
           } catch (err) {
             if (tbody.children.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" style="color: var(--red); text-align: center; padding: 24px;">⚠ Error loading data</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="' + currentColCount + '" style="color: var(--red); text-align: center; padding: 24px;">⚠ Error loading data</td></tr>';
             }
             syncPill.textContent = 'offline';
             renderUpdated('Disconnected');

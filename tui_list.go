@@ -145,7 +145,7 @@ shrinkColumns:
 		headerParts = append(headerParts, displayPad("5:Last Reply", lastReplyWidth))
 	}
 	if m.visibleColumns[6] {
-		headerParts = append(headerParts, "6:Last Loss")
+		headerParts = append(headerParts, displayPad("6:Last Loss", lastLossWidth))
 	}
 
 	headerLine := strings.Join(headerParts, " ")
@@ -237,7 +237,7 @@ shrinkColumns:
 			lineParts = append(lineParts, displayPad(lastReply, lastReplyWidth))
 		}
 		if m.visibleColumns[6] {
-			lineParts = append(lineParts, lastLoss)
+			lineParts = append(lineParts, truncateDisplay(lastLoss, lastLossWidth))
 		}
 
 		line := strings.Join(lineParts, " ")

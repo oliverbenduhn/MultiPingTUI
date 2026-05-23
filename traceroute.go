@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -36,8 +37,36 @@ func buildTracerouteCommand(target string) (string, []string, error) {
 	return "", nil, errors.New("traceroute/tracepath not found in PATH")
 }
 
+func isValidTracerouteTarget(target string) bool {
+	t := strings.TrimSpace(target)
+	if t == "" {
+		return false
+	}
+	// Target cannot start with a hyphen to prevent flag injection.
+	if strings.HasPrefix(t, "-") {
+		return false
+	}
+	// Allow only safe RFC-compliant characters for hostnames/IPs.
+	for _, r := range t {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == ':' || r == '[' || r == ']') {
+			return false
+		}
+	}
+	return true
+}
+
 func runTraceroute(ctx context.Context, host, target string, seq int) tracerouteResult {
 	start := time.Now()
+	if !isValidTracerouteTarget(target) {
+		return tracerouteResult{
+			host:   host,
+			seq:    seq,
+			target: target,
+			err:    errors.New("invalid traceroute target"),
+			took:   0,
+		}
+	}
+
 	cmdName, args, err := buildTracerouteCommand(target)
 	if err != nil {
 		return tracerouteResult{host: host, seq: seq, target: target, err: err}
@@ -54,7 +83,7 @@ func runTraceroute(ctx context.Context, host, target string, seq int) traceroute
 
 	return tracerouteResult{
 		host:   host,
-		seq:   seq,
+		seq:    seq,
 		target: target,
 		output: string(out),
 		err:    runErr,

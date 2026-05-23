@@ -53,9 +53,6 @@ func updateHostDisplayName(wrapper PingWrapperInterface) bool {
 		return false
 	}
 
-	// Refresh computed fields so we work with up-to-date info
-	stats.ComputeState(2_000_000_000)
-
 	// Get IP from stats.iprepr (already resolved during wrapper creation)
 	ipStr := stats.iprepr
 	if ipStr == "" {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -23,17 +24,20 @@ type SystemPingWrapper struct {
 	cmd          *exec.Cmd
 	ping_options string
 	mu           sync.RWMutex
+	cancel       context.CancelFunc
 }
 
 var time_extractor = regexp.MustCompile(`time[=<]([\d\.]+) *(.?s)`)
 var time_extractor_non_local = regexp.MustCompile(`[=<]([\d\.]+) *(.?s)`)
 
 func (w *SystemPingWrapper) Start() {
+	w.mu.Lock()
 	// Use host as initial display name (DNS lookup happens later via periodic updates)
 	displayHost := w.host
 	w.hstring = fmt.Sprintf("%s (%s)", displayHost, w.ip.String())
 	w.stats.SetHostRepr(displayHost)
 	w.stats.iprepr = w.ip.String()
+	w.mu.Unlock()
 
 	var path string
 
@@ -71,7 +75,12 @@ func (w *SystemPingWrapper) Start() {
 	}
 	args = append(args, w.ip.String())
 
-	w.cmd = exec.Command(path, args...)
+	w.mu.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	w.cancel = cancel
+	w.cmd = exec.CommandContext(ctx, path, args...)
+	w.mu.Unlock()
+
 	w.cmd.Env = append(w.cmd.Environ(), "LANG=C")
 	r, err := w.cmd.StdoutPipe()
 	if err != nil {
@@ -117,9 +126,15 @@ func (w *SystemPingWrapper) Start() {
 }
 
 func (w *SystemPingWrapper) Stop() {
-	w.mu.RLock()
+	w.mu.Lock()
+	cancel := w.cancel
 	cmd := w.cmd
-	w.mu.RUnlock()
+	w.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+
 	if cmd == nil || cmd.Process == nil {
 		return
 	}

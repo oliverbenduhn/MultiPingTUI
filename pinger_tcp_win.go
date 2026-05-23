@@ -13,19 +13,21 @@ import (
 )
 
 type TCPPingWrapper struct {
-	host       string
-	ip         *net.IPAddr
-	hstring    string
-	port       int
-	str_tgt    string
-	stats      *PWStats
-	loopTicker *time.Ticker
-	stopChan   chan struct{}
-	stopOnce   sync.Once
-	mu         sync.RWMutex
+	host              string
+	ip                *net.IPAddr
+	hstring           string
+	port              int
+	str_tgt           string
+	stats             *PWStats
+	loopTicker        *time.Ticker
+	stopChan          chan struct{}
+	stopOnce          sync.Once
+	mu                sync.RWMutex
+	lastIntervalCheck time.Time
 }
 
 func (w *TCPPingWrapper) Start() {
+	w.mu.Lock()
 	// Use host as initial display name (DNS lookup happens later via periodic updates)
 	displayHost := w.host
 	w.hstring = fmt.Sprintf("tcp://%v:%v (%v:%v)", displayHost, w.port, w.ip.String(), w.port)
@@ -36,12 +38,34 @@ func (w *TCPPingWrapper) Start() {
 
 	w.stopChan = make(chan struct{})
 	w.stopOnce = sync.Once{}
-	w.loopTicker = time.NewTicker(time.Second)
+
+	// Set initial interval based on adaptive mode
+	initialInterval := time.Second
+	if w.stats.adaptive_interval {
+		initialInterval = w.stats.GetPingInterval()
+		w.lastIntervalCheck = time.Now()
+	}
+	w.loopTicker = time.NewTicker(initialInterval)
+	w.mu.Unlock()
 
 	go func(w *TCPPingWrapper) {
 		for {
+			w.mu.Lock()
+			// Dynamically adjust interval based on host status
+			if w.stats.adaptive_interval {
+				if time.Since(w.lastIntervalCheck) > 5*time.Second {
+					desiredInterval := w.stats.GetPingInterval()
+					if desiredInterval != initialInterval {
+						w.loopTicker.Reset(desiredInterval)
+						initialInterval = desiredInterval
+					}
+					w.lastIntervalCheck = time.Now()
+				}
+			}
+			w.mu.Unlock()
+
 			go func(t *TCPPingWrapper) {
-				t.spawnChecker()
+				t.ping()
 			}(w)
 			select {
 			case <-w.loopTicker.C:
@@ -53,18 +77,15 @@ func (w *TCPPingWrapper) Start() {
 
 }
 
-func (w *TCPPingWrapper) spawnChecker() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (w *TCPPingWrapper) ping() {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	go func() {
-		time.Sleep(time.Second)
-		cancel()
-	}()
-
 	start := time.Now()
+	w.mu.Lock()
+	w.stats.lastsent = start.UnixNano()
+	w.mu.Unlock()
 
-	var conn net.Conn
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "tcp", w.str_tgt)
 	if err == nil {
@@ -76,17 +97,18 @@ func (w *TCPPingWrapper) spawnChecker() {
 		w.mu.Unlock()
 		conn.Close()
 	}
-
 }
 
 func (w *TCPPingWrapper) Stop() {
 	w.stopOnce.Do(func() {
+		w.mu.Lock()
 		if w.loopTicker != nil {
 			w.loopTicker.Stop()
 		}
 		if w.stopChan != nil {
 			close(w.stopChan)
 		}
+		w.mu.Unlock()
 	})
 }
 
@@ -113,3 +135,4 @@ func (w *TCPPingWrapper) SetHostRepr(h string) {
 	defer w.mu.Unlock()
 	w.stats.SetHostRepr(h)
 }
+

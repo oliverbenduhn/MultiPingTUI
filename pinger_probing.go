@@ -41,6 +41,7 @@ func (w *ProbingWrapper) Start() {
 	w.pinger.Size = w.size
 	w.pinger.Debug = DebugMode
 
+	w.mu.Lock()
 	// Set initial interval based on adaptive mode
 	if w.stats.adaptive_interval {
 		w.pinger.Interval = w.stats.GetPingInterval()
@@ -48,6 +49,8 @@ func (w *ProbingWrapper) Start() {
 	} else {
 		w.pinger.Interval = time.Second
 	}
+	w.mu.Unlock()
+
 	if runtime.GOOS == "linux" {
 		w.pinger.SetDoNotFragment(true)
 	}
@@ -61,10 +64,11 @@ func (w *ProbingWrapper) Start() {
 	// Use host as initial display name (DNS lookup happens later via periodic updates)
 	displayHost := w.host
 
+	w.mu.Lock()
 	w.hstring = fmt.Sprintf("%s (%s)", displayHost, w.ip.String())
-
 	w.stats.SetHostRepr(displayHost)
 	w.stats.iprepr = w.ip.IP.String()
+	w.mu.Unlock()
 
 	go func(w *ProbingWrapper) {
 		err := w.pinger.Run()

@@ -27,12 +27,14 @@ type TCPPingWrapper struct {
 	stopOnce          sync.Once
 	mu                sync.RWMutex
 	lastIntervalCheck time.Time
+	checker           *tcpshaker.Checker
+	cancelChecker     context.CancelFunc
 }
 
 func (w *TCPPingWrapper) Start() {
+	w.mu.Lock()
 	// Use host as initial display name (DNS lookup happens later via periodic updates)
 	displayHost := w.host
-	w.hstring = fmt.Sprintf("tcp://%v:%v (%v:%v)", displayHost, w.port, w.ip.String(), w.port)
 	w.stats.SetHostRepr(fmt.Sprintf("tcp://%v:%v", displayHost, w.port))
 	w.stats.iprepr = w.ip.IP.String()
 
@@ -41,10 +43,16 @@ func (w *TCPPingWrapper) Start() {
 		w.hstring = fmt.Sprintf("tcp://%v:%v ([%v]:%v)", displayHost, w.port, w.ip.String(), w.port)
 	} else {
 		w.str_tgt = fmt.Sprintf("%v:%v", w.ip.String(), w.port)
+		w.hstring = fmt.Sprintf("tcp://%v:%v (%v:%v)", displayHost, w.port, w.ip.String(), w.port)
 	}
 
 	w.stopChan = make(chan struct{})
 	w.stopOnce = sync.Once{}
+
+	// Initialize Checker once
+	w.checker = tcpshaker.NewChecker()
+	ctx, cancel := context.WithCancel(context.Background())
+	w.cancelChecker = cancel
 
 	// Set initial interval based on adaptive mode
 	initialInterval := time.Second
@@ -53,12 +61,20 @@ func (w *TCPPingWrapper) Start() {
 		w.lastIntervalCheck = time.Now()
 	}
 	w.loopTicker = time.NewTicker(initialInterval)
+	w.mu.Unlock()
+
+	go func() {
+		if err := w.checker.CheckingLoop(ctx); err != nil {
+			// Fail silently or handle error gracefully
+		}
+	}()
+	<-w.checker.WaitReady()
 
 	go func(w *TCPPingWrapper) {
 		for {
+			w.mu.Lock()
 			// Dynamically adjust interval based on host status
 			if w.stats.adaptive_interval {
-				w.mu.Lock()
 				if time.Since(w.lastIntervalCheck) > 5*time.Second {
 					desiredInterval := w.stats.GetPingInterval()
 					if desiredInterval != initialInterval {
@@ -67,11 +83,11 @@ func (w *TCPPingWrapper) Start() {
 					}
 					w.lastIntervalCheck = time.Now()
 				}
-				w.mu.Unlock()
 			}
+			w.mu.Unlock()
 
 			go func(t *TCPPingWrapper) {
-				t.spawnChecker()
+				t.ping()
 			}(w)
 			select {
 			case <-w.loopTicker.C:
@@ -83,22 +99,12 @@ func (w *TCPPingWrapper) Start() {
 
 }
 
-func (w *TCPPingWrapper) spawnChecker() {
-	checker := tcpshaker.NewChecker()
-
-	ctx, stopChecker := context.WithCancel(context.Background())
-	defer stopChecker()
-	go func() {
-		if err := checker.CheckingLoop(ctx); err != nil {
-			fmt.Println("checking loop stopped due to fatal error: ", err)
-		}
-	}()
-	<-checker.WaitReady()
+func (w *TCPPingWrapper) ping() {
 	start := time.Now()
 	w.mu.Lock()
-	w.stats.lastsent = time.Now().UnixNano()
+	w.stats.lastsent = start.UnixNano()
 	w.mu.Unlock()
-	err := checker.CheckAddr(w.str_tgt, time.Second)
+	err := w.checker.CheckAddr(w.str_tgt, time.Second)
 	if err == nil {
 		w.mu.Lock()
 		w.stats.has_ever_received = true
@@ -111,12 +117,17 @@ func (w *TCPPingWrapper) spawnChecker() {
 
 func (w *TCPPingWrapper) Stop() {
 	w.stopOnce.Do(func() {
+		w.mu.Lock()
 		if w.loopTicker != nil {
 			w.loopTicker.Stop()
 		}
 		if w.stopChan != nil {
 			close(w.stopChan)
 		}
+		if w.cancelChecker != nil {
+			w.cancelChecker()
+		}
+		w.mu.Unlock()
 	})
 }
 
@@ -143,3 +154,4 @@ func (w *TCPPingWrapper) SetHostRepr(h string) {
 	defer w.mu.Unlock()
 	w.stats.SetHostRepr(h)
 }
+

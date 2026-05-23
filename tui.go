@@ -488,6 +488,9 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			host := wrapper.Host()
 			m.setDetailHost(host)
 			state := m.getOrCreateTraceState(host)
+			if state.running {
+				return m, nil
+			}
 			state.seq++
 			state.running = true
 			state.startedAt = time.Now()

@@ -54,6 +54,7 @@ type StatusServer struct {
 	traceMu     sync.RWMutex
 	traces      map[string]*webTraceState
 	globalStats *GlobalStatistics
+	traceSem    chan struct{}
 }
 
 type webTraceState struct {
@@ -95,6 +96,7 @@ func StartStatusServer(repo HostRepository, provider StatsProvider, initialView 
 		view:          initialView,
 		traces:        make(map[string]*webTraceState),
 		globalStats:   globalStats,
+		traceSem:      make(chan struct{}, 2),
 	}
 
 	mux := http.NewServeMux()
@@ -202,9 +204,19 @@ func (s *StatusServer) traceHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Try to acquire slot in trace semaphore non-blocking.
+		select {
+		case s.traceSem <- struct{}{}:
+			// Acquired slot
+		default:
+			http.Error(w, "Too many concurrent traceroutes. Please try again later.", http.StatusTooManyRequests)
+			return
+		}
+
 		seq := s.startTrace(key, target)
 		timeout := 20 * time.Second
 		go func(hostKey string, hostTarget string, hostSeq int) {
+			defer func() { <-s.traceSem }()
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 			res := runTraceroute(ctx, hostKey, hostTarget, hostSeq)

@@ -1373,6 +1373,7 @@ func RunTUI(ps *PingService, repo HostRepository, tw *TransitionWriter, initialF
 			// Explicit terminal cleanup
 			fmt.Print("\033[?25h")     // Show cursor
 			fmt.Print("\033[2J\033[H") // Clear screen
+			fmt.Print("\033[?1049l")   // Exit alt screen
 			fmt.Fprintf(os.Stderr, "PANIC in bubbletea.Run:\n%v\n%s\n", r, debug.Stack())
 			finalErr = fmt.Errorf("panic in bubbletea: %v", r)
 		}

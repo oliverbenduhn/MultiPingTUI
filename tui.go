@@ -909,9 +909,12 @@ func (m *TUIModel) renderDetailView(wrapper PingWrapperInterface) string {
 		details.WriteString(accentStyle.Render(fmt.Sprintf("Last RTT: %s\n", stats.lastrtt_as_string)))
 		details.WriteString(accentStyle.Render(fmt.Sprintf("Last Received: %s ago\n", time.Duration(stats.last_seen_nano).Round(time.Millisecond))))
 		if stats.last_loss_nano > 0 {
+			// last_loss_nano is the recovery time; compute outage start from duration
+			lossStartNano := stats.last_loss_nano - stats.last_loss_duration
 			details.WriteString("\n")
-			details.WriteString(fmt.Sprintf("Last Loss: %s\n", time.Unix(0, stats.last_loss_nano).Format("2006-01-02 15:04:05")))
-			details.WriteString(fmt.Sprintf("Loss Duration: %s\n", time.Duration(stats.last_loss_duration).Round(time.Second)))
+			details.WriteString(fmt.Sprintf("Outage started:  %s\n", time.Unix(0, lossStartNano).Format("2006-01-02 15:04:05")))
+			details.WriteString(fmt.Sprintf("Outage ended:    %s\n", time.Unix(0, stats.last_loss_nano).Format("2006-01-02 15:04:05")))
+			details.WriteString(fmt.Sprintf("Outage duration: %s\n", time.Duration(stats.last_loss_duration).Round(time.Second)))
 		}
 	} else {
 		details.WriteString(offlineStyle.Render("Status: OFFLINE ✗"))

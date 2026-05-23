@@ -200,7 +200,10 @@ func main() {
 
 	transition_writer := &TransitionWriter{}
 	if config.Log != "" {
-		transition_writer.Init(config.Log, &quitFlag)
+		if err := transition_writer.Init(config.Log); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to open log file: %v\n", err)
+			os.Exit(1)
+		}
 		defer transition_writer.Close()
 	}
 

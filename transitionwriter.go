@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"log"
 	"os"
 	"sync"
 	"time"
@@ -17,11 +16,11 @@ type TransitionWriter struct {
 	closeOnce          sync.Once
 }
 
-func (w *TransitionWriter) Init(filename string, _ *bool) {
+func (w *TransitionWriter) Init(filename string) error {
 	var err error
 	w.fh, err = os.Create(filename)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	w.writer = bufio.NewWriter(w.fh)
 	w.quit = make(chan struct{})
@@ -40,6 +39,7 @@ func (w *TransitionWriter) Init(filename string, _ *bool) {
 		}
 	}(w)
 	w.writer_initialized = true
+	return nil
 }
 
 func (w *TransitionWriter) WriteString(st string) {

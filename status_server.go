@@ -687,11 +687,11 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
       background: rgba(240, 246, 252, 0.03);
     }
     tbody tr.offline-row {
-      opacity: 0.3;
+      opacity: 0.65;
       border-left: 3px solid var(--red);
     }
     tbody tr.offline-row:hover {
-      opacity: 0.5;
+      opacity: 0.85;
     }
     .status-cell {
       display: flex;

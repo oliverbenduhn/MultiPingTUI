@@ -24,6 +24,7 @@ type Config struct {
 	NoDNS             bool
 	EditConfig        bool
 	AdaptiveInterval  bool
+	WebServerMode     bool
 	Args              []string
 }
 
@@ -49,6 +50,7 @@ func LoadConfig() *Config {
 	flag.BoolVar(&c.NoDNS, "no-dns", false, "skip reverse DNS lookups (faster startup for large subnets)")
 	flag.BoolVar(&c.EditConfig, "edit-config", false, "open the config editor (~/.config/mping/config.yaml) and exit")
 	flag.BoolVar(&c.AdaptiveInterval, "adaptive", false, "use adaptive ping intervals (auto-enabled for subnets; slower for hosts never seen online)")
+	flag.BoolVar(&c.WebServerMode, "webserver", false, "run in pure webserver mode (no TUI/display, starts status server in background)")
 
 	flag.Usage = usage
 	flag.Parse()

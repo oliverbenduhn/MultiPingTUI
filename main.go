@@ -228,6 +228,62 @@ func main() {
 
 	globalStats := NewGlobalStatistics()
 
+	// Pure Webserver mode
+	if config.WebServerMode {
+		if config.WebPort <= 0 {
+			fmt.Fprintf(os.Stderr, "error: web-port must be greater than 0 to run in webserver mode\n")
+			os.Exit(1)
+		}
+
+		ps.Start()
+
+		// Build initial view from user settings
+		initialView := ServerView{
+			Filter: userSettings.View.Filter,
+			Sort:   userSettings.View.Sort,
+			Rate:   userSettings.View.Rate,
+			Hidden: cloneHiddenHosts(userSettings.View.Hidden),
+			Cols:   append([]int{}, userSettings.View.Cols...),
+		}
+
+		statsProvider := func(pw PingWrapperInterface) PWStats {
+			return pw.CalcStats(TimeoutThresholdNS)
+		}
+
+		statusServer, err := StartStatusServer(repo, statsProvider, initialView, config.WebPort, globalStats)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to start status server on port %d: %v\n", config.WebPort, err)
+			ps.Stop()
+			os.Exit(1)
+		}
+
+		fmt.Printf("MultiPingTUI pure webserver mode started successfully!\n")
+		fmt.Printf("Web interface is available at: http://127.0.0.1:%d\n", config.WebPort)
+		fmt.Printf("Monitoring %d hosts in background... Press Ctrl+C to exit.\n", len(hosts))
+
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		defer signal.Stop(sigChan)
+
+		<-sigChan
+
+		fmt.Printf("\nShutting down webserver gracefully...\n")
+
+		// Persist the final view state of the web interface back to the standard config
+		finalView := statusServer.View()
+		userSettings.View.Filter = finalView.Filter
+		userSettings.View.Sort = finalView.Sort
+		userSettings.View.Rate = finalView.Rate
+		userSettings.View.Cols = append([]int{}, finalView.Cols...)
+		userSettings.View.Hidden = cloneHiddenHosts(finalView.Hidden)
+		_ = SaveUserSettings(userSettings)
+
+		statusServer.Stop()
+		ps.Stop()
+		fmt.Printf("Goodbye!\n")
+		return
+	}
+
 	// TUI mode (default, interactive)
 	if config.Tui && !config.Quiet {
 		initialFilter := determineInitialFilter(config.OnlyOnline, config.OnlyOffline)

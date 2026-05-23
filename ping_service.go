@@ -14,6 +14,8 @@ type PingService struct {
 	transitionWriter *TransitionWriter
 	dnsUpdater       *DNSUpdater
 	wrapperFactory   func(host string, options Options, tw *TransitionWriter) PingWrapperInterface
+	mu               sync.Mutex
+	running          bool
 }
 
 // NewPingService creates a new PingService
@@ -40,14 +42,85 @@ func (s *PingService) InitHosts(hosts []string) {
 
 // Start starts all ping wrappers and the DNS updater
 func (s *PingService) Start() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running {
+		return
+	}
+	s.running = true
+
 	wrappers := s.repo.GetAll()
 
 	if DebugMode {
 		fmt.Fprintf(os.Stderr, "DEBUG: Starting %d ping wrappers (parallel DNS lookups, staggered start)\n", len(wrappers))
 	}
 
-	// Start wrappers in parallel goroutines to avoid blocking on DNS lookups
-	sem := make(chan struct{}, 20) // Allow 20 concurrent starts
+	startWrappers(wrappers)
+
+	if DebugMode {
+		fmt.Fprintf(os.Stderr, "DEBUG: All %d wrappers started successfully\n", len(wrappers))
+	}
+
+	s.dnsUpdater.Start()
+}
+
+// Stop stops all ping wrappers and the DNS updater
+func (s *PingService) Stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.running {
+		return
+	}
+	s.running = false
+
+	s.dnsUpdater.Stop()
+	for _, pw := range s.repo.GetAll() {
+		pw.Stop()
+	}
+}
+
+// ReplaceHosts replaces the current hosts with new ones, handling graceful shutdown/startup
+func (s *PingService) ReplaceHosts(hosts []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	wasRunning := s.running
+	if wasRunning {
+		s.running = false
+	}
+
+	// Stop DNS updates while replacing hosts
+	if wasRunning {
+		s.dnsUpdater.Stop()
+	}
+
+	oldWrappers := s.repo.GetAll()
+
+	newWrappers := make([]PingWrapperInterface, len(hosts))
+	for i, host := range hosts {
+		newWrappers[i] = s.wrapperFactory(host, s.options, s.transitionWriter)
+	}
+
+	// Stop old wrappers
+	if wasRunning {
+		for _, pw := range oldWrappers {
+			pw.Stop()
+		}
+	}
+
+	// Update repository
+	s.repo.UpdateAll(newWrappers)
+
+	// Restart DNS updates for new hosts
+	if wasRunning {
+		startWrappers(newWrappers)
+		s.running = true
+		s.dnsUpdater.Start()
+	}
+}
+
+func startWrappers(wrappers []PingWrapperInterface) {
+	// Start wrappers in parallel goroutines to avoid blocking on DNS lookups.
+	sem := make(chan struct{}, 20)
 	var wg sync.WaitGroup
 
 	for i, pw := range wrappers {
@@ -60,8 +133,8 @@ func (s *PingService) Start() {
 				}
 			}()
 
-			sem <- struct{}{}        // Acquire
-			defer func() { <-sem }() // Release
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
 			if DebugMode && idx > 0 && idx%50 == 0 {
 				fmt.Fprintf(os.Stderr, "DEBUG: Starting wrapper %d/%d\n", idx, len(wrappers))
@@ -70,57 +143,10 @@ func (s *PingService) Start() {
 			pw.Start()
 		}(i, pw)
 
-		// Small delay to avoid overwhelming the system at startup
 		if i >= 10 && i < len(wrappers)-1 && i%10 == 0 {
 			time.Sleep(1 * time.Millisecond)
 		}
 	}
 
 	wg.Wait()
-
-	if DebugMode {
-		fmt.Fprintf(os.Stderr, "DEBUG: All %d wrappers started successfully\n", len(wrappers))
-	}
-
-	s.dnsUpdater.Start()
-}
-
-// Stop stops all ping wrappers and the DNS updater
-func (s *PingService) Stop() {
-	s.dnsUpdater.Stop()
-	for _, pw := range s.repo.GetAll() {
-		pw.Stop()
-	}
-}
-
-// ReplaceHosts replaces the current hosts with new ones, handling graceful shutdown/startup
-func (s *PingService) ReplaceHosts(hosts []string) {
-	// Stop DNS updates while replacing hosts
-	s.dnsUpdater.Stop()
-
-	oldWrappers := s.repo.GetAll()
-	
-	newWrappers := make([]PingWrapperInterface, len(hosts))
-	for i, host := range hosts {
-		newWrappers[i] = s.wrapperFactory(host, s.options, s.transitionWriter)
-	}
-	
-	// Update repository
-	s.repo.UpdateAll(newWrappers)
-
-	// Stop old wrappers
-	for _, pw := range oldWrappers {
-		pw.Stop()
-	}
-
-	// Staggered start for new wrappers
-	for i, pw := range newWrappers {
-		pw.Start()
-		if i >= 10 && i < len(newWrappers)-1 {
-			time.Sleep(1 * time.Millisecond)
-		}
-	}
-
-	// Restart DNS updates for new hosts
-	s.dnsUpdater.Start()
 }

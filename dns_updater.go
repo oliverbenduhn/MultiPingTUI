@@ -40,6 +40,7 @@ func (d *DNSUpdater) Start() {
 		return
 	}
 	d.stopChan = make(chan struct{})
+	stopChan := d.stopChan
 	d.running = true
 	d.mu.Unlock()
 
@@ -55,7 +56,7 @@ func (d *DNSUpdater) Start() {
 		select {
 		case <-initialTimer.C:
 			d.performDNSUpdates()
-		case <-d.stopChan:
+		case <-stopChan:
 			return
 		}
 
@@ -67,7 +68,7 @@ func (d *DNSUpdater) Start() {
 			select {
 			case <-ticker.C:
 				d.performDNSUpdates()
-			case <-d.stopChan:
+			case <-stopChan:
 				return
 			}
 		}

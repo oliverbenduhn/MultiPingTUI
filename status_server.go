@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1797,136 +1796,7 @@ func marshalColumns(cols []int) string {
 }
 
 func (s *StatusServer) filterAndSort(wrappers []PingWrapperInterface, view ServerView) []PingWrapperInterface {
-	var filtered []PingWrapperInterface
-
-	for _, wrapper := range wrappers {
-		if view.Hidden[wrapper.Host()] {
-			continue
-		}
-
-		stats := s.statsProvider(wrapper)
-		isOnline := stats.state && stats.error_message == ""
-		seen := stats.has_ever_received
-
-		switch view.Filter {
-		case FilterAll:
-			filtered = append(filtered, wrapper)
-		case FilterSmart:
-			if isOnline || seen {
-				filtered = append(filtered, wrapper)
-			}
-		case FilterOnline:
-			if isOnline {
-				filtered = append(filtered, wrapper)
-			}
-		case FilterOffline:
-			if !isOnline {
-				filtered = append(filtered, wrapper)
-			}
-		}
-	}
-
-	switch view.Sort {
-	case SortByName:
-		sort.Slice(filtered, func(i, j int) bool {
-			statsI := s.statsProvider(filtered[i])
-			statsJ := s.statsProvider(filtered[j])
-			onlineI := statsI.state && statsI.error_message == ""
-			onlineJ := statsJ.state && statsJ.error_message == ""
-			if onlineI != onlineJ {
-				return onlineI
-			}
-			nameI := statsI.GetHostRepr()
-			nameJ := statsJ.GetHostRepr()
-			if nameI == "" {
-				nameI = filtered[i].Host()
-			}
-			if nameJ == "" {
-				nameJ = filtered[j].Host()
-			}
-			return nameI < nameJ
-		})
-	case SortByStatus:
-		sort.Slice(filtered, func(i, j int) bool {
-			statsI := s.statsProvider(filtered[i])
-			statsJ := s.statsProvider(filtered[j])
-			onlineI := statsI.state && statsI.error_message == ""
-			onlineJ := statsJ.state && statsJ.error_message == ""
-			if onlineI != onlineJ {
-				return onlineI
-			}
-			return filtered[i].Host() < filtered[j].Host()
-		})
-	case SortByRTT:
-		sort.Slice(filtered, func(i, j int) bool {
-			statsI := s.statsProvider(filtered[i])
-			statsJ := s.statsProvider(filtered[j])
-			onlineI := statsI.state && statsI.error_message == ""
-			onlineJ := statsJ.state && statsJ.error_message == ""
-			if onlineI != onlineJ {
-				return onlineI
-			}
-			return statsI.lastrtt < statsJ.lastrtt
-		})
-	case SortByLastSeen:
-		sort.Slice(filtered, func(i, j int) bool {
-			statsI := s.statsProvider(filtered[i])
-			statsJ := s.statsProvider(filtered[j])
-			onlineI := statsI.state && statsI.error_message == ""
-			onlineJ := statsJ.state && statsJ.error_message == ""
-			if onlineI != onlineJ {
-				return !onlineI
-			}
-			if !onlineI && !onlineJ {
-				if statsI.lastrecv == 0 && statsJ.lastrecv == 0 {
-					return filtered[i].Host() < filtered[j].Host()
-				}
-				if statsI.lastrecv == 0 {
-					return false
-				}
-				if statsJ.lastrecv == 0 {
-					return true
-				}
-				return statsI.last_loss_nano > statsJ.last_loss_nano
-			}
-			hasLossI := statsI.last_loss_nano > 0
-			hasLossJ := statsJ.last_loss_nano > 0
-			if hasLossI != hasLossJ {
-				return hasLossI
-			}
-			if hasLossI && hasLossJ {
-				return statsI.last_loss_nano > statsJ.last_loss_nano
-			}
-			nameI := statsI.GetHostRepr()
-			nameJ := statsJ.GetHostRepr()
-			if nameI == "" {
-				nameI = filtered[i].Host()
-			}
-			if nameJ == "" {
-				nameJ = filtered[j].Host()
-			}
-			return nameI < nameJ
-		})
-	case SortByIP:
-		sort.Slice(filtered, func(i, j int) bool {
-			statsI := s.statsProvider(filtered[i])
-			statsJ := s.statsProvider(filtered[j])
-			keyI := ipKey(statsI.iprepr)
-			keyJ := ipKey(statsJ.iprepr)
-			if keyI != nil && keyJ != nil && !bytes.Equal(keyI, keyJ) {
-				return bytes.Compare(keyI, keyJ) < 0
-			}
-			if keyI != nil && keyJ == nil {
-				return true
-			}
-			if keyI == nil && keyJ != nil {
-				return false
-			}
-			return filtered[i].Host() < filtered[j].Host()
-		})
-	}
-
-	return filtered
+	return applyFilterAndSort(wrappers, view.Filter, view.Sort, view.Hidden, s.statsProvider)
 }
 
 type DashboardStats struct {

@@ -33,24 +33,30 @@ func (m *HostListModel) renderListView(wrappers []PingWrapperInterface, getCache
 	minLastReply := 12
 	minLastLoss := 12
 
+	// Create a local copy of visible columns to avoid mutating persistent settings
+	visibleCols := make(map[int]bool)
+	for k, v := range m.visibleColumns {
+		visibleCols[k] = v
+	}
+
 	// Count visible columns for spacing calculation
 	visibleCount := 0
-	if m.visibleColumns[1] {
+	if visibleCols[1] {
 		visibleCount++
 	}
-	if m.visibleColumns[2] {
+	if visibleCols[2] {
 		visibleCount++
 	}
-	if m.visibleColumns[3] {
+	if visibleCols[3] {
 		visibleCount++
 	}
-	if m.visibleColumns[4] {
+	if visibleCols[4] {
 		visibleCount++
 	}
-	if m.visibleColumns[5] {
+	if visibleCols[5] {
 		visibleCount++
 	}
-	if m.visibleColumns[6] {
+	if visibleCols[6] {
 		visibleCount++
 	}
 
@@ -60,22 +66,22 @@ func (m *HostListModel) renderListView(wrappers []PingWrapperInterface, getCache
 	}
 
 	totalWidth := 0
-	if m.visibleColumns[1] {
+	if visibleCols[1] {
 		totalWidth += statusWidth
 	}
-	if m.visibleColumns[2] {
+	if visibleCols[2] {
 		totalWidth += nameWidth
 	}
-	if m.visibleColumns[3] {
+	if visibleCols[3] {
 		totalWidth += ipWidth
 	}
-	if m.visibleColumns[4] {
+	if visibleCols[4] {
 		totalWidth += rttWidth
 	}
-	if m.visibleColumns[5] {
+	if visibleCols[5] {
 		totalWidth += lastReplyWidth
 	}
-	if m.visibleColumns[6] {
+	if visibleCols[6] {
 		totalWidth += lastLossWidth
 	}
 	totalWidth += spaceCount
@@ -91,60 +97,114 @@ func (m *HostListModel) renderListView(wrappers []PingWrapperInterface, getCache
 shrinkColumns:
 	for totalWidth > target {
 		switch {
-		case nameWidth > minName && m.visibleColumns[2]:
+		case nameWidth > minName && visibleCols[2]:
 			nameWidth--
-		case lastLossWidth > minLastLoss && m.visibleColumns[6]:
+		case lastLossWidth > minLastLoss && visibleCols[6]:
 			lastLossWidth--
-		case lastReplyWidth > minLastReply && m.visibleColumns[5]:
+		case lastReplyWidth > minLastReply && visibleCols[5]:
 			lastReplyWidth--
-		case ipWidth > minIP && m.visibleColumns[3]:
+		case ipWidth > minIP && visibleCols[3]:
 			ipWidth--
-		case rttWidth > minRTT && m.visibleColumns[4]:
+		case rttWidth > minRTT && visibleCols[4]:
 			rttWidth--
 		default:
 			// We hit mins; break to avoid infinite loop
 			break shrinkColumns
 		}
 		totalWidth = 0
-		if m.visibleColumns[1] {
+		if visibleCols[1] {
 			totalWidth += statusWidth
 		}
-		if m.visibleColumns[2] {
+		if visibleCols[2] {
 			totalWidth += nameWidth
 		}
-		if m.visibleColumns[3] {
+		if visibleCols[3] {
 			totalWidth += ipWidth
 		}
-		if m.visibleColumns[4] {
+		if visibleCols[4] {
 			totalWidth += rttWidth
 		}
-		if m.visibleColumns[5] {
+		if visibleCols[5] {
 			totalWidth += lastReplyWidth
 		}
-		if m.visibleColumns[6] {
+		if visibleCols[6] {
 			totalWidth += lastLossWidth
 		}
 		totalWidth += spaceCount
 	}
 
+	// If we still don't fit even with minimums, dynamically disable columns starting from the right
+	// (excluding Status (1) and Name (2)) to fit the terminal.
+	if totalWidth > target {
+		for _, col := range []int{6, 5, 4, 3} {
+			if visibleCols[col] {
+				visibleCols[col] = false
+				// Recompute totalWidth
+				visibleCount = 0
+				for i := 1; i <= 6; i++ {
+					if visibleCols[i] {
+						visibleCount++
+					}
+				}
+				spaceCount = visibleCount - 1
+				if spaceCount < 0 {
+					spaceCount = 0
+				}
+				totalWidth = 0
+				if visibleCols[1] {
+					totalWidth += statusWidth
+				}
+				if visibleCols[2] {
+					totalWidth += nameWidth
+				}
+				if visibleCols[3] {
+					totalWidth += ipWidth
+				}
+				if visibleCols[4] {
+					totalWidth += rttWidth
+				}
+				if visibleCols[5] {
+					totalWidth += lastReplyWidth
+				}
+				if visibleCols[6] {
+					totalWidth += lastLossWidth
+				}
+				totalWidth += spaceCount
+
+				if totalWidth <= target {
+					break
+				}
+			}
+		}
+	}
+
+	// If we STILL don't fit, shrink name down to absolute minimum of 3 characters
+	if totalWidth > target && visibleCols[2] {
+		needed := totalWidth - target
+		nameWidth -= needed
+		if nameWidth < 3 {
+			nameWidth = 3
+		}
+	}
+
 	// Build table header based on visible columns with dynamic widths
 	var headerParts []string
-	if m.visibleColumns[1] {
+	if visibleCols[1] {
 		headerParts = append(headerParts, displayPad("1:St", statusWidth))
 	}
-	if m.visibleColumns[2] {
+	if visibleCols[2] {
 		headerParts = append(headerParts, displayPad("2:Name", nameWidth))
 	}
-	if m.visibleColumns[3] {
+	if visibleCols[3] {
 		headerParts = append(headerParts, displayPad("3:IP", ipWidth))
 	}
-	if m.visibleColumns[4] {
+	if visibleCols[4] {
 		headerParts = append(headerParts, displayPad("4:RTT", rttWidth))
 	}
-	if m.visibleColumns[5] {
+	if visibleCols[5] {
 		headerParts = append(headerParts, displayPad("5:Last Reply", lastReplyWidth))
 	}
-	if m.visibleColumns[6] {
+	if visibleCols[6] {
 		headerParts = append(headerParts, displayPad("6:Last Loss", lastLossWidth))
 	}
 
@@ -221,22 +281,22 @@ shrinkColumns:
 
 		// Build line based on visible columns with dynamic widths
 		var lineParts []string
-		if m.visibleColumns[1] {
+		if visibleCols[1] {
 			lineParts = append(lineParts, displayPad(status, statusWidth))
 		}
-		if m.visibleColumns[2] {
+		if visibleCols[2] {
 			lineParts = append(lineParts, displayPad(name, nameWidth))
 		}
-		if m.visibleColumns[3] {
+		if visibleCols[3] {
 			lineParts = append(lineParts, displayPad(ip, ipWidth))
 		}
-		if m.visibleColumns[4] {
+		if visibleCols[4] {
 			lineParts = append(lineParts, displayPad(rtt, rttWidth))
 		}
-		if m.visibleColumns[5] {
+		if visibleCols[5] {
 			lineParts = append(lineParts, displayPad(lastReply, lastReplyWidth))
 		}
-		if m.visibleColumns[6] {
+		if visibleCols[6] {
 			lineParts = append(lineParts, truncateDisplay(lastLoss, lastLossWidth))
 		}
 

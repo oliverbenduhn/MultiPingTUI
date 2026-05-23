@@ -530,7 +530,7 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
       --bg-primary: #0D1117;
       --bg-panel: #161B22;
       --text-primary: #C9D1D9;
-      --text-muted: #8B949E;
+      --text-muted: #A8B4CE;
       --green: #3FB950;
       --yellow: #E2B93D;
       --red: #F85149;
@@ -1023,7 +1023,7 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
 	    <div class="controls">
 	      <div class="control-group">
 	        <label for="filter">Filter</label>
-	        <select id="filter">
+	        <select id="filter" aria-label="Filter hosts by status">
 	          <option value="0">All</option>
 	          <option value="1">Smart</option>
 	          <option value="2">Online</option>
@@ -1032,7 +1032,7 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
 	      </div>
 	      <div class="control-group">
 	        <label for="rate">Rate</label>
-	        <select id="rate">
+	        <select id="rate" aria-label="Select refresh rate">
 	          <option value="0">100ms</option>
 	          <option value="1">1s</option>
 	          <option value="2">5s</option>
@@ -1041,7 +1041,7 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
 	      </div>
 	      <div class="control-group">
 	        <label for="sort">Sort</label>
-	        <select id="sort">
+	        <select id="sort" aria-label="Sort hosts by field">
 	          <option value="0">Name</option>
           <option value="1">Status</option>
           <option value="2">RTT</option>
@@ -1076,7 +1076,7 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
     <div class="detail-panel" role="dialog" aria-modal="true" aria-labelledby="detail-title">
       <div class="detail-header">
         <div class="detail-title" id="detail-title">Details</div>
-        <button class="detail-close" id="detail-close" type="button">Close</button>
+        <button class="detail-close" id="detail-close" type="button" aria-label="Close details dialog">Close</button>
       </div>
       <div class="detail-body" id="detail-body"></div>
     </div>
@@ -2000,7 +2000,7 @@ func (s *StatusServer) dashboardHtmlHandler(w http.ResponseWriter, r *http.Reque
       --bg-primary: #0D1117;
       --bg-panel: #161B22;
       --text-primary: #C9D1D9;
-      --text-muted: #8B949E;
+      --text-muted: #A8B4CE;
       --green: #3FB950;
       --yellow: #E2B93D;
       --red: #F85149;

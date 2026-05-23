@@ -56,8 +56,9 @@ type TUIModel struct {
 	footer           FooterModel
 	hostList         HostListModel
 	quitting         bool
-	transitionWriter *TransitionWriter
-	statusMessage    string
+	transitionWriter    *TransitionWriter
+	statusMessage       string
+	statusMessageTime   time.Time // when statusMessage was last set
 	statsCache       map[string]PWStats // cache stats per wrapper to avoid recalculation
 	statsCacheMu     sync.RWMutex       // mutex for statsCache
 	statsCacheTime   time.Time          // when stats were last calculated
@@ -369,6 +370,11 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		elapsed := now.Sub(m.lastTickTime)
 		interval := m.getTickDuration()
 
+		// Auto-expire status messages after 5 seconds
+		if m.statusMessage != "" && !m.statusMessageTime.IsZero() && now.Sub(m.statusMessageTime) >= 5*time.Second {
+			m.statusMessage = ""
+		}
+
 		// Check if it's time for a stats update
 		if elapsed >= interval {
 			// Update stats cache for all wrappers
@@ -405,7 +411,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case configEditedMsg:
 		settings, err := LoadUserSettings()
 		if err != nil {
-			m.statusMessage = fmt.Sprintf("Failed to reload config: %v", err)
+			m.setStatus(fmt.Sprintf("Failed to reload config: %v", err))
 			return m, nil
 		}
 		applyUserSettingsToModel(m, settings)
@@ -414,7 +420,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !sameStringSlice(settings.Hosts, m.hostsRaw) {
 			hosts, err := parseHostsInput(strings.Join(settings.Hosts, "\n"))
 			if err != nil {
-				m.statusMessage = fmt.Sprintf("Failed to reload hosts: %v", err)
+				m.setStatus(fmt.Sprintf("Failed to reload hosts: %v", err))
 				return m, nil
 			}
 			m.hostsRaw = append([]string{}, settings.Hosts...)
@@ -424,9 +430,9 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.hostList.cacheInvalidated = true
 		}
 		if msg.err != nil {
-			m.statusMessage = fmt.Sprintf("Config edited (with error): %v", msg.err)
+			m.setStatus(fmt.Sprintf("Config edited (with error): %v", msg.err))
 		} else {
-			m.statusMessage = "Config reloaded"
+			m.setStatus("Config reloaded")
 		}
 		m.pushStatusView()
 		return m, nil
@@ -593,7 +599,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, keys.CycleRate):
 			m.header.updateRate = nextUpdateRate(m.header.updateRate)
-			m.statusMessage = fmt.Sprintf("Update rate: %s", m.header.getUpdateRateString())
+			m.setStatus(fmt.Sprintf("Update rate: %s", m.header.getUpdateRateString()))
 			// No need to restart any tickers - the time-based calculation handles everything
 			m.pushStatusView()
 			return m, nil
@@ -604,7 +610,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.hostList.cursor < len(filtered) {
 					hostToHide := filtered[m.hostList.cursor].Host()
 					m.hostList.hiddenHosts[hostToHide] = true
-					m.statusMessage = fmt.Sprintf("Hidden: %s (press INS to show all)", hostToHide)
+					m.setStatus(fmt.Sprintf("Hidden: %s (press INS to show all)", hostToHide))
 					// Move cursor to next visible item or previous if at end
 					if m.hostList.cursor >= len(filtered)-1 && m.hostList.cursor > 0 {
 						m.hostList.cursor--
@@ -620,9 +626,9 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.hostList.hiddenHosts) > 0 {
 				count := len(m.hostList.hiddenHosts)
 				m.hostList.hiddenHosts = make(map[string]bool)
-				m.statusMessage = fmt.Sprintf("Showing all hosts (%d unhidden)", count)
+				m.setStatus(fmt.Sprintf("Showing all hosts (%d unhidden)", count))
 			} else {
-				m.statusMessage = "No hidden hosts"
+				m.setStatus("No hidden hosts")
 			}
 			m.hostList.cacheInvalidated = true
 			m.pushStatusView()
@@ -631,7 +637,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, keys.EditConfig):
 			path, err := userSettingsPath()
 			if err != nil {
-				m.statusMessage = fmt.Sprintf("Failed to locate config: %v", err)
+				m.setStatus(fmt.Sprintf("Failed to locate config: %v", err))
 				return m, nil
 			}
 			// Ensure config exists so the editor has something to open.
@@ -639,12 +645,12 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			exe, err := os.Executable()
 			if err != nil {
-				m.statusMessage = fmt.Sprintf("Failed to locate executable: %v", err)
+				m.setStatus(fmt.Sprintf("Failed to locate executable: %v", err))
 				return m, nil
 			}
 			cmd := exec.Command(exe, "-edit-config")
 			cmd.Env = append(os.Environ(), "MPING_CONFIG="+path)
-			m.statusMessage = fmt.Sprintf("Editing config: %s (Ctrl+S save, Esc close)", path)
+			m.setStatus(fmt.Sprintf("Editing config: %s (Ctrl+S save, Esc close)", path))
 			return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 				return configEditedMsg{err: err}
 			})
@@ -659,9 +665,9 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.hostList.visibleColumns[colNum] = !m.hostList.visibleColumns[colNum]
 				colName := m.hostList.getColumnName(colNum)
 				if m.hostList.visibleColumns[colNum] {
-					m.statusMessage = fmt.Sprintf("Column %d (%s) shown", colNum, colName)
+					m.setStatus(fmt.Sprintf("Column %d (%s) shown", colNum, colName))
 				} else {
-					m.statusMessage = fmt.Sprintf("Column %d (%s) hidden", colNum, colName)
+					m.setStatus(fmt.Sprintf("Column %d (%s) hidden", colNum, colName))
 				}
 				m.pushStatusView()
 				return m, nil
@@ -670,6 +676,13 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// setStatus sets a status message and records the time it was set.
+// Messages are automatically cleared after 5 seconds by the tick handler.
+func (m *TUIModel) setStatus(msg string) {
+	m.statusMessage = msg
+	m.statusMessageTime = time.Now()
 }
 
 func sameStringSlice(a, b []string) bool {
@@ -794,7 +807,7 @@ func (m *TUIModel) syncViewFromStatusServer() {
 
 	if view.Rate != m.header.updateRate && view.Rate >= UpdateRate100ms && view.Rate <= UpdateRate30s {
 		m.header.updateRate = view.Rate
-		m.statusMessage = fmt.Sprintf("Update rate: %s", m.header.getUpdateRateString())
+		m.setStatus(fmt.Sprintf("Update rate: %s", m.header.getUpdateRateString()))
 		changed = true
 	}
 

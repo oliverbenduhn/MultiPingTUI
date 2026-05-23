@@ -346,7 +346,7 @@ func loadHostsFromFile(path string) ([]string, error) {
 	var hosts []string
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		line := strings.TrimSpace(stripYAMLComment(scanner.Text()))
 		if line == "" {
 			continue
 		}

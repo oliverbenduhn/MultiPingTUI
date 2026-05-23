@@ -412,8 +412,12 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Update hosts if they changed.
 		if !sameStringSlice(settings.Hosts, m.hostsRaw) {
+			hosts, err := parseHostsInput(strings.Join(settings.Hosts, "\n"))
+			if err != nil {
+				m.statusMessage = fmt.Sprintf("Failed to reload hosts: %v", err)
+				return m, nil
+			}
 			m.hostsRaw = append([]string{}, settings.Hosts...)
-			hosts := parseHostsInput(strings.Join(settings.Hosts, "\n"))
 			m.ps.ReplaceHosts(hosts)
 			m.hostList.cursor = -1
 			m.hostList.scrollOffset = 0

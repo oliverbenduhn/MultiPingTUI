@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"net"
 	"strings"
 )
@@ -66,17 +68,19 @@ func visibleColumnsList(cols map[int]bool) []int {
 	return out
 }
 
-func parseHostsInput(raw string) []string {
+func parseHostsInput(raw string) ([]string, error) {
 	fields := strings.Fields(raw)
 	var hosts []string
 	for _, item := range fields {
 		if ips, err := ExpandCIDR(item); err == nil {
 			hosts = append(hosts, ips...)
+		} else if errors.Is(err, ErrCIDRTooLarge) {
+			return nil, fmt.Errorf("failed to expand %q: %w", item, err)
 		} else {
 			hosts = append(hosts, item)
 		}
 	}
-	return hosts
+	return hosts, nil
 }
 
 func ipKey(s string) []byte {

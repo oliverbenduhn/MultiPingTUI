@@ -144,9 +144,7 @@ func parseUserSettings(b []byte) (UserSettings, error) {
 
 	for sc.Scan() {
 		line := sc.Text()
-		if idx := strings.Index(line, "#"); idx >= 0 {
-			line = line[:idx]
-		}
+		line = stripYAMLComment(line)
 		line = strings.TrimRight(line, " \t")
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -420,4 +418,36 @@ func splitYAMLKeyValue(line string) (string, string, bool) {
 		k = s
 	}
 	return k, v, true
+}
+
+func stripYAMLComment(line string) string {
+	inSingle := false
+	inDouble := false
+	escaped := false
+
+	for i, r := range line {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inDouble && r == '\\' {
+			escaped = true
+			continue
+		}
+		switch r {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		case '#':
+			if !inSingle && !inDouble {
+				return line[:i]
+			}
+		}
+	}
+	return line
 }

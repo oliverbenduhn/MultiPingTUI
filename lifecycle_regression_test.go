@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -234,5 +236,60 @@ func TestDashboardAggregatesRTTByDuration(t *testing.T) {
 	}
 	if dashboard.TopRTT[0].Host != "slow" || dashboard.TopRTT[1].Host != "fast" {
 		t.Fatalf("expected duration sort slow before fast, got %#v", dashboard.TopRTT)
+	}
+}
+
+func TestLoadHostsFromFileIgnoresComments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts.txt")
+	content := "localhost\n# comment\nexample.com # inline comment\n\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write hostfile: %v", err)
+	}
+
+	hosts, err := loadHostsFromFile(path)
+	if err != nil {
+		t.Fatalf("load hostfile: %v", err)
+	}
+
+	want := []string{"localhost", "example.com"}
+	if !sameStringSlice(hosts, want) {
+		t.Fatalf("expected %#v, got %#v", want, hosts)
+	}
+}
+
+func TestParseUserSettingsKeepsHashInsideQuotedHost(t *testing.T) {
+	settings, err := parseUserSettings([]byte(`hosts:
+  - "host#one"
+  - 'host#two'
+view:
+  filter: 1
+  sort: 4
+  rate: 1
+  cols: [1,2]
+  hidden: {}
+`))
+	if err != nil {
+		t.Fatalf("parse settings: %v", err)
+	}
+
+	want := []string{"host#one", "host#two"}
+	if !sameStringSlice(settings.Hosts, want) {
+		t.Fatalf("expected hosts %#v, got %#v", want, settings.Hosts)
+	}
+}
+
+func TestParseHostsInputReturnsCIDRLimitError(t *testing.T) {
+	_, err := parseHostsInput("10.0.0.0/8")
+	if !errors.Is(err, ErrCIDRTooLarge) {
+		t.Fatalf("expected ErrCIDRTooLarge, got %v", err)
+	}
+
+	hosts, err := parseHostsInput("192.0.2.0/30 example.com")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	want := []string{"192.0.2.1", "192.0.2.2", "example.com"}
+	if !sameStringSlice(hosts, want) {
+		t.Fatalf("expected %#v, got %#v", want, hosts)
 	}
 }

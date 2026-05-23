@@ -945,7 +945,7 @@ func (m *TUIModel) renderDetailView(wrapper PingWrapperInterface) string {
 			if scroll < 0 {
 				scroll = 0
 			}
-			if scroll > len(lines) {
+			if scroll >= len(lines) {
 				scroll = 0
 			}
 		}

@@ -482,7 +482,7 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			stats := m.getCachedStats(wrapper)
 			target := strings.TrimSpace(stats.iprepr)
 			if target == "" {
-				target = strings.TrimSpace(wrapper.Host())
+				target = deriveTraceTarget(wrapper.Host())
 			}
 
 			host := wrapper.Host()

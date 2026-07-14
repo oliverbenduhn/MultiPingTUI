@@ -100,14 +100,16 @@ type configEditedMsg struct {
 }
 
 func NewTUIModel(ps *PingService, repo HostRepository, tw *TransitionWriter, initialFilter FilterMode, globalStats *GlobalStatistics) *TUIModel {
-	if initialFilter != FilterOnline && initialFilter != FilterOffline && initialFilter != FilterSmart {
+	// B1: FilterAll is a valid initial choice (CLI -only-all, or user setting).
+	// Only truly invalid values get coerced to FilterSmart.
+	if !validFilterMode(initialFilter) {
 		initialFilter = FilterSmart
 	}
 
 	hostList := NewHostListModel()
 	hostList.filterMode = initialFilter
 
-	return &TUIModel{
+	m := &TUIModel{
 		ps:               ps,
 		repo:             repo,
 		header:           NewHeaderModel(),
@@ -122,6 +124,18 @@ func NewTUIModel(ps *PingService, repo HostRepository, tw *TransitionWriter, ini
 		globalStats:      globalStats,
 		hostsRaw:         nil,
 	}
+
+	// B3: HeaderModel has its own filterMode (zero-value = FilterAll). Sync it
+	// with hostList at init so the header label matches the list filter.
+	m.header.filterMode = initialFilter
+
+	// B2: Pre-warm statsCache so the first View() (before any tick) doesn't
+	// show "No hosts match" because stats are empty. This fixes the ~1s blank
+	// window when starting with FilterSmart.
+	m.updateStatsCache()
+	m.hostList.cacheInvalidated = true
+
+	return m
 }
 
 // tickMsg is sent every 100ms to update the display
@@ -676,7 +690,15 @@ func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.setStatus(fmt.Sprintf("Failed to locate executable: %v", err))
 				return m, nil
 			}
-			cmd := exec.Command(exe, "-edit-config")
+			// B5: honor MPING_EDITOR (e.g. `vi`, `code -w`) so the edit-mode is
+			// testable and users can pick their own editor. Falls back to the
+			// built-in `-edit-config` subprocess when unset.
+			var cmd *exec.Cmd
+			if editor := os.Getenv("MPING_EDITOR"); editor != "" {
+				cmd = exec.Command("sh", "-c", editor+" "+path)
+			} else {
+				cmd = exec.Command(exe, "-edit-config")
+			}
 			cmd.Env = append(os.Environ(), "MPING_CONFIG="+path)
 			m.setStatus(fmt.Sprintf("Editing config: %s (Ctrl+S save, Esc close)", path))
 			return m, tea.ExecProcess(cmd, func(err error) tea.Msg {

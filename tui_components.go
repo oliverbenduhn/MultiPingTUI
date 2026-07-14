@@ -129,7 +129,9 @@ func (m FooterModel) View() string {
 	default:
 		s.WriteString(helpStyle.Render("↑↓/jk: navigate │ enter: details │ del: hide host │ ins: show all │ d: dashboard │ e: edit config │ 1-6: columns │ g: group by subnet │ q: quit"))
 		s.WriteString("\n")
-		s.WriteString(helpStyle.Render("f: filter │ s: sort │ r: rate (100ms/1s/5s/30s) │ pgup/pgdn: scroll"))
+		// B4: Smart filter defined explicitly so users know which hosts survive
+		// the initial filter (online OR ever-replied, not just ever-seen-online).
+		s.WriteString(helpStyle.Render("f: filter (Smart=online|seen → Online → Offline → All) │ s: sort │ r: rate │ pgup/pgdn: scroll"))
 	}
 	return s.String()
 }

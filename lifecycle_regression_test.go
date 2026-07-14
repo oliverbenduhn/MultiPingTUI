@@ -65,11 +65,15 @@ func TestTUITickUpdatesStatsCacheOnce(t *testing.T) {
 	repo.UpdateAll([]PingWrapperInterface{wrapper})
 
 	model := NewTUIModel(nil, repo, nil, FilterAll, NewGlobalStatistics())
+	before := wrapper.count
+	// Init does a one-shot pre-warm of statsCache so the first View() shows
+	// data immediately (B2 fix). Each tick must do exactly one update on top.
 	model.lastTickTime = time.Now().Add(-time.Second)
 	_, _ = model.Update(tickMsg(time.Now()))
 
-	if wrapper.count != 1 {
-		t.Fatalf("expected one CalcStats call per tick, got %d", wrapper.count)
+	if wrapper.count != before+1 {
+		t.Fatalf("expected one CalcStats call per tick (was %d before, %d after tick)",
+			before, wrapper.count)
 	}
 }
 

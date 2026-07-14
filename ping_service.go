@@ -79,7 +79,19 @@ func (s *PingService) Stop() {
 	}
 }
 
-// ReplaceHosts replaces the current hosts with new ones, handling graceful shutdown/startup
+// ReplaceHosts swaps the host list atomically. The wrapperFactory was injected
+// at NewPingService time so this stays decoupled from concrete backend types.
+//
+// Sequence under s.mu:
+//  1. Snapshot running state, flip running=false
+//  2. Stop DNS updater (its callbacks reach into repo)
+//  3. Build new wrappers via factory — this can do DNS lookups; do it BEFORE
+//     stopping the old ones to avoid a window where no wrappers exist
+//  4. Stop old wrappers (no longer the source of truth)
+//  5. Repo.UpdateAll — atomic swap visible to readers
+//  6. If wasRunning, restart everything
+//
+// If not running, this just swaps the repo contents without spawning goroutines.
 func (s *PingService) ReplaceHosts(hosts []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

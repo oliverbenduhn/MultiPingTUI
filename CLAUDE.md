@@ -353,3 +353,42 @@ MultiPingTUI/
 ├── go.mod / go.sum           # Dependencies
 └── vendor/                    # Vendored dependencies
 ```
+
+---
+
+## Architectural Boundaries (Strict)
+
+These are enforced by convention, not by the compiler. Violating them breaks the system silently.
+
+1. **Repository access in the TUI.** Only `m.repo.GetAll()` / `m.repo.UpdateAll(...)` (the `HostRepository` interface in `repository.go`) may touch the wrapper collection. Never reach into `m.ps` directly from a view or update handler to read wrapper state.
+2. **UI state vs. domain state.** `hostList.cursor`, `hostList.scrollOffset`, `viewMode`, `statusMessage` are UI state. `PWStats.state`, `PWStats.has_ever_received`, wrapper lifecycle are domain state. UI handlers must not mutate domain state directly — go through `PingService` (`ReplaceHosts`, `Stop`, `Start`).
+3. **Filter/Sort logic.** `getFilteredWrappers` in `tui_list.go` is the single source of truth. New filtering or sorting behavior goes there or in `tui_utils.go` (`nextFilterMode`, `nextSortMode`). Don't branch on `m.filterMode` inside `renderListView` — the filter has already been applied.
+4. **Stats lifecycle.** Stats live in `statsCache` (map keyed by host string) and are written only by `updateStatsCache()`. Read paths use `getCachedStats()`. Don't compute stats on the fly in render code — it runs every frame.
+5. **No new dependencies without explicit justification.** `go.mod` carries seven direct deps. Every one is load-bearing. New deps require (a) a feature that can't be done with stdlib + existing deps, (b) an entry in the commit message explaining why.
+
+## Anti-Patterns (Forbidden in this repo)
+
+- **Mocking frameworks.** No gomock, mockery, testify-mock. Hand-rolled fakes that satisfy the interface. See `tui_test.go` `fakeWrapper` for the pattern.
+- **Table-driven golden snapshots in the first pass.** Assert on substrings of rendered output; upgrade to golden files only after a real change baseline exists.
+- **Pre-emptive interfaces.** An interface with one implementation is a YAGNI violation. `PingWrapperInterface` exists because there are three real implementations; do not introduce interfaces "for testing" without a second concrete type in flight.
+- **Global locks.** `MemoryHostRepository.mu` and `TransitionWriter.mu` are the only mutexes. New shared state needs its own mutex, named for the field it protects.
+- **`time.Sleep` in tests longer than 1s.** Tests settle on `tickCmd` (100ms). Sleeping for the production tick interval (1s/5s/30s) makes the suite slow and hides timing bugs. Use `m.header.updateRate = UpdateRate100ms` to force fast ticks in tests.
+- **Modifying `var Version` directly in `main.go` when bumping.** Use `./scripts/bump_version.sh <semver>` to keep the format consistent.
+- **Reading wrapper state outside `CalcStats` / `Stats()`.** Those two methods are the contract; reaching into private fields breaks the ping abstraction.
+- **`tea.ExecProcess` with a hard-coded editor.** Honor `MPING_EDITOR` env first (`tui.go:689`), fall back to the built-in subprocess only when unset.
+
+## Conventions for AI Agents
+
+- **Trace the full call chain before editing.** A bug report names a symptom. Grep every caller of the function you intend to change. Fixing only the path the report names leaves siblings broken.
+- **One runnable check per non-trivial logic.** A new branch / parser / state transition leaves exactly one test behind — the smallest thing that fails if the logic breaks. No frameworks, no fixtures.
+- **Inline comments answer "why", not "what".** The code shows what it does. Comments explain constraints, tradeoffs, and the alternative that was rejected.
+- **Mark deliberate simplifications.** When you cut a corner (global lock, naive heuristic, O(n²) scan), add `# ponytail: <ceiling>, <upgrade path>`. Future agents will grep this to find debt.
+- **Do not refactor on the way to a fix.** The diff for a bug fix should be the diff for the bug fix. Style cleanups go in a separate commit or a separate message.
+- **Don't add features the user didn't ask for.** "Did X. Y covers it. Need full X? Say so." is the right shape. "I also added Z while I was in there" is debt smuggled back in.
+
+## Quick Sanity Checks Before Commit
+
+- `go test -race -count=1 ./...` passes (target: under 5s).
+- `go build ./...` clean.
+- If you touched `tui.go`, `tui_list.go`, `tui_components.go`, `pwstats.go`, or `ping_service.go`: at least one test in `tui_test.go` exercises the changed path.
+- Commit message explains *why*, not *what*. The diff shows the what.

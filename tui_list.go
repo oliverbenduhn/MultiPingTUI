@@ -444,6 +444,15 @@ func (m *HostListModel) adjustScrollForRows(rows []renderRow) {
 	}
 }
 
+// getFilteredWrappers is the single source of truth for which hosts appear in
+// the list view. Cache invariant: cachedWrappers is valid iff cacheInvalidated
+// is false AND cachedWrappers is non-nil. The cache is invalidated by:
+//   - updateStatsCache() (set true after every tick that refreshes stats)
+//   - filter/sort mode changes (in Update() handlers)
+//   - ReplaceHosts (clears and re-seeds)
+//
+// Reading this twice per frame (once for the list, once for the dashboard) is
+// intentional — both views must agree on what's visible.
 func (m *HostListModel) getFilteredWrappers(wrappers []PingWrapperInterface, getCachedStats func(PingWrapperInterface) PWStats) []PingWrapperInterface {
 	// Return cached result if valid
 	if !m.cacheInvalidated && m.cachedWrappers != nil {

@@ -95,6 +95,16 @@ func (p *PWStats) SetHostRepr(hrepr string) {
 	p.hrepr = hrepr
 }
 
+// ComputeState is the only mutation entry point for PWStats. Called once per
+// ping result. Three booleans and two timestamps drive every downstream view:
+//   - state: current up/down
+//   - has_ever_been_online: never-replied hosts stay "never seen" in Smart filter
+//   - state_initialized: gates the first-observation path (no false transitions)
+//   - last_loss_nano: RECOVERY timestamp (not the loss start)
+//   - last_loss_duration: outage length, set when transitioning down→up
+//
+// Timeout threshold: a host is "up" iff the last reply was within this window.
+// Adaptive intervals call this with the same threshold but at a coarser cadence.
 func (p *PWStats) ComputeState(timeout_threshold int64) {
 	now := nowFunc().UnixNano()
 	if p.startup_time == 0 {

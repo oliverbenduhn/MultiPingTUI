@@ -1,0 +1,54 @@
+# Cursor rules — MultiPingTUI
+# Short, dense context. Full docs: CLAUDE.md (read it before non-trivial changes).
+
+project: MultiPingTUI
+language: Go 1.24
+binary: mping
+domain: Terminal TUI for multi-host network probing (ICMP / TCP / system ping)
+framework: bubbletea v1.3.10 + lipgloss + bubbles
+
+# Entry points
+- main.go: CLI flags, mode selection, global flags (DebugMode, SkipDNS)
+- tui.go: TUI model (Elm-style, tea.Model)
+- tui_list.go: list rendering, filter/sort logic
+- pingwrapper.go: factory selecting ICMP/TCP/System backend by scheme
+- pwstats.go: state machine for per-host stats
+- status_server.go: HTTP sidecar (read-mostly)
+
+# Architecture boundaries (strict)
+- UI handlers MUST go through m.repo (HostRepository interface), never m.ps directly.
+- UI state (cursor, scroll, viewMode) ≠ domain state (PWStats.state, wrapper lifecycle). Don't mix.
+- Filter/sort logic lives ONLY in getFilteredWrappers (tui_list.go) and tui_utils.go. Don't branch in render.
+- Stats are read from statsCache via getCachedStats. Never compute stats in render code.
+- New shared state needs its own mutex, named for the field it protects.
+
+# Anti-patterns (forbidden)
+- No mock libraries. Hand-rolled fakes satisfying interfaces.
+- No table-driven golden snapshots in first pass; substring assertions on rendered output.
+- No interfaces with one implementation.
+- No global locks; per-field mutex only.
+- No time.Sleep > 1s in tests. Force UpdateRate100ms in test models.
+- No reading wrapper internals outside CalcStats/Stats methods.
+- No new deps without a written justification in the commit.
+
+# Conventions
+- One runnable check per non-trivial logic. No test frameworks.
+- Inline comments explain WHY, not what.
+- Mark deliberate shortcuts with `# ponytail: <ceiling>, <upgrade path>`.
+- One logical change per commit.
+
+# Tests
+go test -race -count=1 ./...     # must pass; ~4s
+
+# Key files for TUI work
+- tui.go (Update/View lifecycle)
+- tui_list.go (render + filter cache)
+- tui_components.go (Header/Footer/HostList models)
+- tui_test.go (5 user-flow tests, harness pattern)
+- lifecycle_regression_test.go (regression suite)
+
+# Conventions specific to this codebase
+- Initial filter is set in NewTUIModel; cycle via nextFilterMode() in tui_utils.go.
+- HeaderModel.filterMode and hostList.filterMode must stay in sync (cycle handler does this).
+- Update tick is 100ms by default; stats refresh is gated by m.header.updateRate (header-driven, not body-driven).
+- Edit-mode (key e) honors MPING_EDITOR env, falls back to -edit-config subprocess.

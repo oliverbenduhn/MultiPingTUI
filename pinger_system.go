@@ -146,8 +146,13 @@ func (w *SystemPingWrapper) Host() string {
 }
 
 func (w *SystemPingWrapper) CalcStats(timeout_threshold int64) PWStats {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	// RLock: ComputeState protects its own state machine via smMu.
+	// Hot fields (lastrecv, lastrtt, has_ever_received) are written under
+	// w.mu in onSend/onRecv, so the read here is consistent with the latest
+	// write. State machine mutations inside ComputeState use smMu, allowing
+	// 50+ concurrent HTTP request handlers to run in parallel.
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 	w.stats.ComputeState(timeout_threshold)
 	return *w.stats
 }

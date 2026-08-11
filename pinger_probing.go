@@ -126,20 +126,20 @@ func (w *ProbingWrapper) Host() string {
 }
 
 func (w *ProbingWrapper) CalcStats(timeout_threshold int64) PWStats {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	// RLock: ComputeState protects its own state machine via smMu.
+	// 50+ concurrent readers can now run in parallel instead of serialising
+	// on the wrapper's write lock.
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 	w.stats.ComputeState(timeout_threshold)
 	return *w.stats
 }
 
 func (w *ProbingWrapper) Stats() *PWStats {
+	// RLock + copy: caller may read fields, but we don't expose the
+	// internal pointer to avoid races on subsequent state machine updates.
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	// Return a copy to avoid race conditions on the pointer
-	// But the interface expects *PWStats.
-	// If we return the internal pointer, the caller must not modify it and we can't guarantee read safety if we unlock.
-	// Ideally we should return a copy, but the signature is *PWStats.
-	// For now, let's return a copy on the heap.
 	s := *w.stats
 	return &s
 }

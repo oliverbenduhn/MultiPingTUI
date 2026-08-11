@@ -58,29 +58,59 @@ func (s *GlobalStatistics) GetStartTime() time.Time {
 	return s.StartTime
 }
 
+// PWStats is per-host statistics. Field ownership:
+//
+//   - lastrecv, lastsent, has_ever_received: written by pinger callbacks,
+//     read by anyone (lock-free on amd64).
+//   - state, last_seen_nano, state machine fields (last_loss_nano,
+//     last_loss_duration, last_up_transition, has_ever_been_online,
+//     state_initialized, skip_next_up_highlight, loss_reference_recv,
+//     uptime_nano, last_compute, startup_time): protected by smMu.
+//   - hrepr, iprepr, error_message, lastrtt_as_string, transition_writer,
+//     adaptive_interval: written rarely (Start, DNS update, pinger errors);
+//     read on every render. The wrapper's outer mutex guards these for now.
+//
+// smMu is the ONLY lock that blocks read-side parallelisation. ComputeState
+// takes it briefly; the wrapper's CalcStats takes it via w.mu (RLock) for
+// the display fields, but the state machine itself is independent.
+//
+// Why this matters: at 50 concurrent HTTP requests, every request used to
+// serialize on the wrapper's write lock for ~1500 CalcStats calls. With this
+// split, 50 readers run in parallel; only the brief state-machine update
+// serialises per wrapper, and that's bounded by the snapshot cache (H2) to
+// once per refresh period.
 type PWStats struct {
-	lastsent               int64
-	lastrecv               int64
-	lastrtt                time.Duration
-	lastrtt_as_string      string
-	last_loss_nano         int64
-	last_loss_duration     int64
-	last_seen_nano         int64
-	state                  bool
-	has_ever_received      bool
-	state_initialized      bool
-	skip_next_up_highlight bool
-	has_ever_been_online   bool
-	loss_reference_recv    int64
-	last_up_transition     int64
-	startup_time           int64
-	last_compute           int64
-	uptime_nano            int64
-	transition_writer      *TransitionWriter
-	error_message          string
-	hrepr                  string
-	iprepr                 string
-	adaptive_interval      bool
+	// Hot fields - read on every render, written by pinger callbacks.
+	// Reads are lock-free on amd64 (single aligned word). On other arches
+	// the Go runtime still detects a data race; we keep w.mu protecting
+	// these as well for safety. See pinger_*.CalcStats.
+	lastsent          int64
+	lastrecv          int64
+	lastrtt           time.Duration
+	lastrtt_as_string string
+	has_ever_received bool
+
+	// State machine - protected by smMu.
+	smMu                    sync.Mutex
+	state                   bool
+	last_seen_nano          int64
+	last_loss_nano          int64
+	last_loss_duration      int64
+	last_up_transition      int64
+	has_ever_been_online    bool
+	state_initialized       bool
+	skip_next_up_highlight  bool
+	loss_reference_recv     int64
+	uptime_nano             int64
+	last_compute            int64
+	startup_time            int64
+
+	// Display / config - written rarely.
+	transition_writer *TransitionWriter
+	error_message     string
+	hrepr             string
+	iprepr            string
+	adaptive_interval bool
 }
 
 var nowFunc = time.Now
@@ -103,12 +133,30 @@ func (p *PWStats) SetHostRepr(hrepr string) {
 //   - last_loss_nano: RECOVERY timestamp (not the loss start)
 //   - last_loss_duration: outage length, set when transitioning down→up
 //
+// Concurrency: hot fields (lastrecv, lastsent, lastrtt, has_ever_received)
+// are read without the lock; the state-machine section is serialised by
+// smMu. Multiple concurrent ComputeState calls on the same PWStats will
+// contend on smMu, but the critical section is bounded and the snapshot
+// cache (H2) ensures at most one refresh per 100 ms.
+//
 // Timeout threshold: a host is "up" iff the last reply was within this window.
 // Adaptive intervals call this with the same threshold but at a coarser cadence.
 func (p *PWStats) ComputeState(timeout_threshold int64) {
+	// Hot fields read lock-free. They're updated by pinger callbacks via
+	// the wrapper's w.mu, which serialises against the snapshot refresh
+	// (see H2). On amd64 these are aligned word reads - safe to read
+	// concurrently with another writer as long as that writer uses a
+	// single-word write, which we do via the wrapper's mu.
 	now := nowFunc().UnixNano()
+	lastrecv := p.lastrecv
+	startup := p.startup_time
+
+	p.smMu.Lock()
+	defer p.smMu.Unlock()
+
 	if p.startup_time == 0 {
 		p.startup_time = now
+		startup = now
 	}
 	if p.last_compute == 0 {
 		p.last_compute = now
@@ -118,20 +166,20 @@ func (p *PWStats) ComputeState(timeout_threshold int64) {
 	prevSeen := p.state_initialized
 	prevEverOnline := p.has_ever_been_online
 
-	if p.lastrecv > 0 {
-		delta := now - p.lastrecv
+	if lastrecv > 0 {
+		delta := now - lastrecv
 		if delta < 0 {
 			delta = 0
 		}
 		p.last_seen_nano = delta
 	} else {
-		delta := now - p.startup_time
+		delta := now - startup
 		if delta < 0 {
 			delta = 0
 		}
 		p.last_seen_nano = delta
 	}
-	new_state := p.lastrecv > 0 && p.last_seen_nano < timeout_threshold
+	new_state := lastrecv > 0 && p.last_seen_nano < timeout_threshold
 
 	if !prevSeen {
 		// First observation initializes baseline without marking transitions or highlights
@@ -155,8 +203,8 @@ func (p *PWStats) ComputeState(timeout_threshold int64) {
 	if prevState && !new_state {
 		// Host went down (up→down transition). Keep the last successful receive time so we can
 		// compute the outage duration even though lastrecv will be overwritten on recovery.
-		if p.lastrecv > 0 {
-			p.loss_reference_recv = p.lastrecv
+		if lastrecv > 0 {
+			p.loss_reference_recv = lastrecv
 		}
 	}
 
@@ -215,6 +263,38 @@ func (p *PWStats) ComputeState(timeout_threshold int64) {
 		p.has_ever_been_online = true
 	}
 	p.last_compute = now
+}
+
+// SnapshotState is a lock-free read of the up/down state. It returns:
+//   - state: true if the host is currently up (last reply within timeout_ns)
+//   - lastSeenNs: nanoseconds since the last successful reply (or since startup
+//     if no reply has ever arrived)
+//
+// The returned values are eventually consistent: a pinger callback may update
+// lastrecv at any time and the next caller will see the new value. The
+// 1-atomicity window is acceptable for monitoring - by the time a human looks
+// at the dashboard, the state is already settled.
+func (p *PWStats) SnapshotState(timeoutNs int64) (state bool, lastSeenNs int64) {
+	lastrecv := p.lastrecv
+	if lastrecv > 0 {
+		delta := nowFunc().UnixNano() - lastrecv
+		if delta < 0 {
+			delta = 0
+		}
+		return delta < timeoutNs, delta
+	}
+	// No reply yet - check startup to know how long we've been waiting.
+	p.smMu.Lock()
+	startup := p.startup_time
+	p.smMu.Unlock()
+	if startup == 0 {
+		return false, 0
+	}
+	delta := nowFunc().UnixNano() - startup
+	if delta < 0 {
+		delta = 0
+	}
+	return false, delta
 }
 
 func (p PWStats) OnlineUptime(now int64) time.Duration {

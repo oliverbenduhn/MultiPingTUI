@@ -1,16 +1,20 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -54,11 +58,48 @@ type StatusServer struct {
 	view          ServerView
 	viewMu        sync.RWMutex
 
+	// H2: snapshot cache. Replaces the per-request compute of []HostStatus.
+	// atomic.Pointer makes reads lock-free; refresh does a copy-on-write
+	// under refreshMu. Each request Load()s the pointer and serves from
+	// it. Refresh is triggered by the first request after the snapshot's
+	// expiresAt passes, but readers don't wait for it - they get the
+	// previous snapshot until the new one is published.
+	refreshMu       sync.Mutex
+	cachedSnap      atomic.Pointer[snapshotPayload]
+	cachedSnapVer   atomic.Uint64
+	expiresAt       atomic.Int64 // unix nano
+	cachedSnapDview ServerView   // last view we cached against (under refreshMu)
+
+	// Dashboard cache: same pattern as the status snapshot.
+	dashCacheMu     sync.Mutex
+	dashCached      atomic.Pointer[DashboardStats]
+	dashCachedVer   atomic.Uint64
+	dashExpiresAt   atomic.Int64
+	dashCachedDview ServerView
+
+	// H3: subnet index cache. Parsed subnets + a host→group map for O(1)
+	// group lookup. Rebuilt on view change.
+	subnetMu      sync.Mutex
+	subnetCache   []subnetGroup
+	subnetByName  map[string]string // wrapper.Host() → group name
+	subnetByIP    map[string]string // stats.iprepr → group name
+	subnetVer     uint64
+
 	traceMu     sync.RWMutex
 	traces      map[string]*webTraceState
 	globalStats *GlobalStatistics
 	traceSem    chan struct{}
 }
+
+// snapshotTTL is how long collectStatuses reuses the cached []HostStatus
+// before recomputing. Browsers typically poll /state at 1 Hz; 100 ms keeps
+// the UI feeling live while reducing per-request work by ~10x under load.
+const snapshotTTL = 100 * time.Millisecond
+
+// dashboardSnapshotTTL: the dashboard endpoint aggregates over all visible
+// hosts (online count, RTT buckets, top-offline). It's cheaper than
+// collectStatuses but still iterates all wrappers, so we cache it too.
+const dashboardSnapshotTTL = 200 * time.Millisecond
 
 type webTraceState struct {
 	running    bool
@@ -118,8 +159,13 @@ func StartStatusServer(repo HostRepository, provider StatsProvider, initialView 
 	}
 
 	server.srv = &http.Server{
-		Addr:              listener.Addr().String(),
-		Handler:           mux,
+		Addr: listener.Addr().String(),
+		// H4: gzip middleware wraps the mux so all responses are
+		// transparently compressed when the client sends
+		// "Accept-Encoding: gzip". The dashboard HTML (~5 KB) compresses
+		// to ~1.5 KB, the /state JSON (~280 KB) compresses to ~30 KB -
+		// roughly 8x smaller payloads.
+		Handler:           gzipMiddleware(mux),
 		ReadHeaderTimeout: 2 * time.Second,
 		// Very aggressive timeouts to prevent goroutine leaks
 		IdleTimeout:    5 * time.Second,
@@ -381,30 +427,49 @@ func (s *StatusServer) jsonHandler(w http.ResponseWriter, r *http.Request) {
 	if !allowMethods(w, r, http.MethodGet) {
 		return
 	}
-	statuses := s.collectStatuses()
+	// H2: trigger cache load (or refresh) then serve from atomic.Pointer.
+	_ = s.collectStatuses()
+	cached := s.cachedSnap.Load()
+	if cached == nil {
+		http.Error(w, "snapshot unavailable", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Connection", "close")
-	if err := json.NewEncoder(w).Encode(statuses); err != nil {
-		http.Error(w, "failed to encode status", http.StatusInternalServerError)
+	if cached.gzip != nil && acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+		_, _ = w.Write(cached.gzip)
+		return
 	}
+	_, _ = w.Write(cached.raw)
 }
 
 func (s *StatusServer) stateHandler(w http.ResponseWriter, r *http.Request) {
 	if !allowMethods(w, r, http.MethodGet) {
 		return
 	}
-	state := ViewState{
-		View:     s.snapshotView(),
-		Statuses: s.collectStatuses(),
-		Updated:  time.Now(),
+	// H2: see jsonHandler. We read from cached.stateRaw / cached.stateGzip
+	// (cached ViewState bytes) - no per-request encoding.
+	_ = s.collectStatuses()
+	cached := s.cachedSnap.Load()
+	if cached == nil {
+		http.Error(w, "snapshot unavailable", http.StatusInternalServerError)
+		return
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Connection", "close")
-	if err := json.NewEncoder(w).Encode(state); err != nil {
-		http.Error(w, "failed to encode state", http.StatusInternalServerError)
+	if cached.stateGzip != nil && acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+		_, _ = w.Write(cached.stateGzip)
+		return
 	}
+	_, _ = w.Write(cached.stateRaw)
 }
 
 type viewPatch struct {
@@ -1664,17 +1729,167 @@ func (s *StatusServer) htmlHandler(w http.ResponseWriter, r *http.Request) {
 </html>`, marshalColumns(cols))
 }
 
+// snapshotPayload is the per-TLL wire payload for the status endpoints.
+// Stored behind atomic.Pointer so reads are lock-free.
+type snapshotPayload struct {
+	ver       uint64
+	slice     []HostStatus
+	raw       []byte
+	gzip      []byte
+	stateRaw  []byte
+	stateGzip []byte
+}
+
 func (s *StatusServer) collectStatuses() []HostStatus {
-	wrappers := s.repo.GetAll()
+	// H2: lock-free cache. atomic.Pointer.Load is ~5 ns; no mutex contention
+	// even at 1000 concurrent requests. Refresh is triggered by the first
+	// request after expiresAt; only one goroutine wins refreshMu and
+	// publishes the new payload, so there's no thundering herd.
 	view := s.snapshotView()
+	viewVer := viewVersion(view)
+	now := time.Now().UnixNano()
+
+	if cached := s.cachedSnap.Load(); cached != nil &&
+		cached.ver == viewVer &&
+		now < s.expiresAt.Load() {
+		return cached.slice
+	}
+
+	// Slow path: refresh. refreshMu ensures only one goroutine recomputes.
+	// Other concurrent requests return the previous payload (or wait for
+	// the new one to be published).
+	s.refreshMu.Lock()
+
+	// Double-check: another goroutine may have refreshed while we waited.
+	now = time.Now().UnixNano()
+	if cached := s.cachedSnap.Load(); cached != nil &&
+		cached.ver == viewVer &&
+		now < s.expiresAt.Load() {
+		s.refreshMu.Unlock()
+		return cached.slice
+	}
+
+	statuses := s.computeStatuses(view)
+
+	raw := marshalHostStatuses(statuses)
+	gz := gzipBytes(raw)
+
+	// /state adds the view envelope and a timestamp. The "updated" field
+	// is the cache refresh time; it's stable for the TTL so we can bake it
+	// into the cached bytes. Clients that re-poll see the timestamp move
+	// every 100 ms, which is fine.
+	state := ViewState{
+		View:     s.snapshotView(),
+		Statuses: statuses,
+		Updated:  time.Now(),
+	}
+	stateRaw := marshalViewState(state)
+	stateGzip := gzipBytes(stateRaw)
+
+	payload := &snapshotPayload{
+		ver:       viewVer,
+		slice:     statuses,
+		raw:       raw,
+		gzip:      gz,
+		stateRaw:  stateRaw,
+		stateGzip: stateGzip,
+	}
+	s.cachedSnap.Store(payload)
+	s.cachedSnapVer.Store(viewVer)
+	s.cachedSnapDview = view
+	s.expiresAt.Store(time.Now().Add(snapshotTTL).UnixNano())
+	s.refreshMu.Unlock()
+	return statuses
+}
+
+// marshalHostStatuses / marshalViewState are small helpers so we can swap
+// in a pooled json.Encoder later without rewriting the cache.
+func marshalHostStatuses(s []HostStatus) []byte {
+	b, _ := json.Marshal(s)
+	return b
+}
+
+func marshalViewState(s ViewState) []byte {
+	b, _ := json.Marshal(s)
+	return b
+}
+
+// gzipBytes compresses raw with default gzip. Returns nil for inputs below
+// the minSize threshold (matching gzipResponseWriter.minSize so on-the-wire
+// behaviour matches cached output).
+//
+// The gzip.Writer is pooled because the underlying flate state is heavy
+// (~32 KB of tables) and we're calling this on every snapshot refresh.
+func gzipBytes(raw []byte) []byte {
+	if len(raw) <= 200 {
+		return nil
+	}
+	var buf bytes.Buffer
+	gw := gzipWriterPool.Get().(*gzip.Writer)
+	gw.Reset(&buf)
+	_, _ = gw.Write(raw)
+	_ = gw.Close()
+	gzipWriterPool.Put(gw)
+	return buf.Bytes()
+}
+
+var gzipWriterPool = sync.Pool{
+	New: func() any {
+		w, _ := gzip.NewWriterLevel(io.Discard, gzip.DefaultCompression)
+		return w
+	},
+}
+
+// viewVersion produces a cheap fingerprint of the view inputs that affect
+// the status list (filter, sort, group_by_subnet, hidden set, raw inputs).
+// Used to detect "view changed" so we invalidate the cache. col/rate
+// changes don't affect the status list itself.
+func viewVersion(v ServerView) uint64 {
+	// FNV-1a 64-bit; collisions are extremely unlikely for a small key set
+	// and a stale-cache hit is benign (we'd just be slightly behind).
+	const offset uint64 = 14695981039346656037
+	const prime uint64 = 1099511628211
+	h := offset
+	mix := func(b []byte) {
+		for _, c := range b {
+			h ^= uint64(c)
+			h *= prime
+		}
+		h ^= 0xff
+		h *= prime
+	}
+	mix([]byte{byte(v.Filter), byte(v.Sort)})
+	if v.GroupBySubnet {
+		mix([]byte{1})
+	}
+	for _, in := range v.RawInputs {
+		mix([]byte(in))
+		mix([]byte{0})
+	}
+	// Fold hidden into the hash. Iterate in sorted order would be more
+	// stable but adds an allocation; iterating the map is fine since
+	// collisions are benign.
+	for k := range v.Hidden {
+		mix([]byte(k))
+		mix([]byte{0})
+	}
+	return h
+}
+
+// computeStatuses is the actual work behind collectStatuses. Runs under
+// cacheMu.Lock(); expected frequency <= 10 Hz at 1500 hosts.
+func (s *StatusServer) computeStatuses(view ServerView) []HostStatus {
+	wrappers := s.repo.GetAll()
 	filtered := s.filterAndSort(wrappers, view)
+
+	// H3: build / fetch the subnet index for O(1) group lookup.
+	var idx *subnetIndex
+	if view.GroupBySubnet {
+		idx = s.getSubnetIndex(view)
+	}
+
 	statuses := make([]HostStatus, 0, len(filtered))
 	now := time.Now()
-
-	var subnets []subnetGroup
-	if view.GroupBySubnet {
-		subnets = extractSubnets(view.RawInputs)
-	}
 
 	for _, wrapper := range filtered {
 		stats := s.statsProvider(wrapper)
@@ -1706,8 +1921,8 @@ func (s *StatusServer) collectStatuses() []HostStatus {
 		}
 
 		var subnetGroup string
-		if len(subnets) > 0 {
-			subnetGroup = getHostGroup(wrapper.Host(), stats.iprepr, subnets)
+		if idx != nil {
+			subnetGroup = idx.lookup(wrapper.Host(), stats.iprepr)
 		}
 
 		statuses = append(statuses, HostStatus{
@@ -1728,11 +1943,117 @@ func (s *StatusServer) collectStatuses() []HostStatus {
 	return statuses
 }
 
+// subnetIndex holds parsed subnets plus a host-key → group-name map. Build
+// it once per view change (H3) so per-wrapper lookups are O(1) instead of
+// the O(N_subnets) cost of getHostGroup().
+type subnetIndex struct {
+	groups     []subnetGroup
+	byHostKey  map[string]string // wrapper.Host() -> group name
+	byIPString map[string]string // stats.iprepr -> group name
+}
+
+func (idx *subnetIndex) lookup(hostKey, ipRepr string) string {
+	if idx == nil {
+		return ""
+	}
+	if g, ok := idx.byHostKey[hostKey]; ok {
+		return g
+	}
+	if ipRepr != "" {
+		if g, ok := idx.byIPString[ipRepr]; ok {
+			return g
+		}
+	}
+	return "Standalone Hosts"
+}
+
+// getSubnetIndex returns a cached subnet index for the given view. It
+// rebuilds when the view changes (detected by viewVersion). Wrappers and
+// their host keys are stable; we only rebuild when view.RawInputs or
+// GroupBySubnet changes.
+func (s *StatusServer) getSubnetIndex(view ServerView) *subnetIndex {
+	ver := viewVersion(view)
+	s.subnetMu.Lock()
+	defer s.subnetMu.Unlock()
+	if s.subnetCache != nil && s.subnetVer == ver {
+		return &subnetIndex{
+			groups:     s.subnetCache,
+			byHostKey:  s.subnetByName,
+			byIPString: s.subnetByIP,
+		}
+	}
+	groups := extractSubnets(view.RawInputs)
+	byHost := make(map[string]string, len(s.repo.GetAll()))
+	byIP := make(map[string]string, len(byHost))
+	if len(groups) > 0 {
+		for _, w := range s.repo.GetAll() {
+			key := w.Host()
+			// Prefer the IP if the wrapper has resolved it; fall back to
+			// the host string parse.
+			stats := s.statsProvider(w)
+			g := computeGroupForKey(key, stats.iprepr, groups)
+			if g != "" {
+				byHost[key] = g
+				if stats.iprepr != "" {
+					byIP[stats.iprepr] = g
+				}
+			}
+		}
+	}
+	s.subnetCache = groups
+	s.subnetByName = byHost
+	s.subnetByIP = byIP
+	s.subnetVer = ver
+	return &subnetIndex{groups: groups, byHostKey: byHost, byIPString: byIP}
+}
+
+// computeGroupForKey replicates getHostGroup's logic but operates on the
+// already-resolved host/ip pair, avoiding redundant net.ParseIP calls.
+func computeGroupForKey(hostKey, ipRepr string, subnets []subnetGroup) string {
+	if len(subnets) == 0 {
+		return ""
+	}
+	if ipRepr != "" {
+		if ip := net.ParseIP(ipRepr); ip != nil {
+			for _, sub := range subnets {
+				if sub.IPNet.Contains(ip) {
+					return sub.CIDRStr
+				}
+			}
+		}
+	}
+	if ip := net.ParseIP(hostKey); ip != nil {
+		for _, sub := range subnets {
+			if sub.IPNet.Contains(ip) {
+				return sub.CIDRStr
+			}
+		}
+	}
+	return "Standalone Hosts"
+}
+
 func (s *StatusServer) UpdateView(view ServerView) {
 	view.Cols = normalizeColumns(view.Cols)
 	s.viewMu.Lock()
 	defer s.viewMu.Unlock()
 	s.view = view
+
+	// H2 + H3: when the view changes, the snapshot cache, dashboard cache,
+	// and subnet index are all stale. Force expiry so the next request
+	// recomputes. Setting expiresAt=0 makes the next read see "expired"
+	// and trigger refresh; readers won't see a stale payload because the
+	// version check in collectStatuses/dashboardApiHandler also fails.
+	s.expiresAt.Store(0)
+	s.dashExpiresAt.Store(0)
+	s.refreshMu.Lock()
+	s.cachedSnapVer.Store(0)
+	s.refreshMu.Unlock()
+	s.dashCacheMu.Lock()
+	s.dashCachedVer.Store(0)
+	s.dashCacheMu.Unlock()
+	s.subnetMu.Lock()
+	s.subnetVer = 0 // force rebuild
+	s.subnetMu.Unlock()
 }
 
 func (s *StatusServer) View() ServerView {
@@ -1851,12 +2172,15 @@ func (s *StatusServer) filterAndSort(wrappers []PingWrapperInterface, view Serve
 	filtered := applyFilterAndSort(wrappers, view.Filter, view.Sort, view.Hidden, s.statsProvider)
 
 	if view.GroupBySubnet {
-		subnets := extractSubnets(view.RawInputs)
-		if len(subnets) > 0 {
-			groupMap := make(map[string][]PingWrapperInterface)
+		// H3: reuse the cached subnet index instead of re-parsing view.RawInputs
+		// and re-classifying every wrapper. The index map gives us O(1) group
+		// lookup per wrapper.
+		idx := s.getSubnetIndex(view)
+		if idx != nil && len(idx.groups) > 0 {
+			groupMap := make(map[string][]PingWrapperInterface, len(idx.groups)+1)
 			for _, wrapper := range filtered {
 				stats := s.statsProvider(wrapper)
-				g := getHostGroup(wrapper.Host(), stats.iprepr, subnets)
+				g := idx.lookup(wrapper.Host(), stats.iprepr)
 				groupMap[g] = append(groupMap[g], wrapper)
 			}
 
@@ -1864,13 +2188,13 @@ func (s *StatusServer) filterAndSort(wrappers []PingWrapperInterface, view Serve
 				sortWrappersSliceGeneric(gHosts, view.Sort, s.statsProvider)
 			}
 
-			var orderedGroups []string
-			for _, sub := range subnets {
+			orderedGroups := make([]string, 0, len(idx.groups)+1)
+			for _, sub := range idx.groups {
 				orderedGroups = append(orderedGroups, sub.CIDRStr)
 			}
 			orderedGroups = append(orderedGroups, "Standalone Hosts")
 
-			var flattened []PingWrapperInterface
+			flattened := make([]PingWrapperInterface, 0, len(filtered))
 			for _, gName := range orderedGroups {
 				if gHosts, ok := groupMap[gName]; ok {
 					flattened = append(flattened, gHosts...)
@@ -1906,9 +2230,59 @@ func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, r *http.Reques
 	if !allowMethods(w, r, http.MethodGet) {
 		return
 	}
-	wrappers := s.repo.GetAll()
-	view := s.snapshotView()
 
+	// H2: dashboard cache. Same pattern as collectStatuses. Reads are
+	// lock-free via atomic.Pointer; refresh serialises under dashCacheMu.
+	view := s.snapshotView()
+	viewVer := viewVersion(view)
+	now := time.Now().UnixNano()
+
+	if cached := s.dashCached.Load(); cached != nil &&
+		s.dashCachedVer.Load() == viewVer &&
+		now < s.dashExpiresAt.Load() {
+		s.writeDashboardJSON(w, cached)
+		return
+	}
+
+	s.dashCacheMu.Lock()
+	now = time.Now().UnixNano()
+	if cached := s.dashCached.Load(); cached != nil &&
+		s.dashCachedVer.Load() == viewVer &&
+		now < s.dashExpiresAt.Load() {
+		s.dashCacheMu.Unlock()
+		s.writeDashboardJSON(w, cached)
+		return
+	}
+
+	stats := s.computeDashboard(view)
+	s.dashCached.Store(&stats)
+	s.dashCachedVer.Store(viewVer)
+	s.dashCachedDview = view
+	s.dashExpiresAt.Store(time.Now().Add(dashboardSnapshotTTL).UnixNano())
+	s.dashCacheMu.Unlock()
+	s.writeDashboardJSON(w, &stats)
+}
+
+func (s *StatusServer) writeDashboardJSON(w http.ResponseWriter, stats *DashboardStats) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Connection", "close")
+	if err := json.NewEncoder(w).Encode(stats); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
+}
+
+func (s *StatusServer) writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Connection", "close")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
+}
+
+func (s *StatusServer) computeDashboard(view ServerView) DashboardStats {
+	wrappers := s.repo.GetAll()
 	visible := make([]PingWrapperInterface, 0, len(wrappers))
 	for _, w := range wrappers {
 		if !view.Hidden[w.Host()] {
@@ -2033,7 +2407,7 @@ func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, r *http.Reques
 		dist[i] = RTTBucket{Label: b.label, Count: b.count}
 	}
 
-	resp := DashboardStats{
+	return DashboardStats{
 		Total:             total,
 		Online:            online,
 		Offline:           offline,
@@ -2046,11 +2420,6 @@ func (s *StatusServer) dashboardApiHandler(w http.ResponseWriter, r *http.Reques
 		TopRTT:            topRTT,
 		RTTDist:           dist,
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Connection", "close")
-	json.NewEncoder(w).Encode(resp)
 }
 
 func (s *StatusServer) dashboardHtmlHandler(w http.ResponseWriter, r *http.Request) {

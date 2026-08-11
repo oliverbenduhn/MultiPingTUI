@@ -34,8 +34,9 @@ func (w *ErrorWrapper) Stop()  {}
 func (w *ErrorWrapper) Host() string { return w.host }
 
 func (w *ErrorWrapper) CalcStats(timeoutThreshold int64) PWStats {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	// RLock: ComputeState protects its own state machine via smMu.
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 	w.stats.ComputeState(timeoutThreshold)
 	return *w.stats
 }

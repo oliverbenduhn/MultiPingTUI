@@ -136,8 +136,9 @@ func (w *TCPPingWrapper) Host() string {
 }
 
 func (w *TCPPingWrapper) CalcStats(timeout_threshold int64) PWStats {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	// RLock: see pinger_probing.CalcStats for the rationale.
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 	w.stats.ComputeState(timeout_threshold)
 	return *w.stats
 }

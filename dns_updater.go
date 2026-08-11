@@ -15,6 +15,26 @@ type dnsCacheEntry struct {
 }
 
 // DNSUpdater handles periodic DNS lookups for online hosts
+// DNSUpdater periodically refreshes the reverse-DNS names of online
+// hosts, so a name that resolved late or was missing at startup can
+// still appear in the UI later.
+//
+// Cadence:
+//   - 3 seconds after Start() (gives hosts time to come online for the
+//     first time).
+//   - Every 60 seconds thereafter.
+//
+// Per lookup:
+//   - 500 ms timeout (enforced in host_display.go).
+//   - Semaphore of 20 concurrent lookups.
+//   - SkipDNS (global, -no-dns flag) disables the entire updater.
+//
+// Cache:
+//   - Positive entries (got a name) live for 1 hour.
+//   - Negative entries (no PTR) live for 5 minutes.
+//   - If a wrapper's display name was reverted to the raw IP (e.g. after
+//     ReplaceHosts), a cache hit restores the cached name without
+//     re-resolving.
 type DNSUpdater struct {
 	wrappersSource func() []PingWrapperInterface
 	stopChan       chan struct{}
@@ -33,6 +53,9 @@ func NewDNSUpdater(wrappersSource func() []PingWrapperInterface) *DNSUpdater {
 }
 
 // Start starts the periodic DNS update goroutine
+// Start spawns the periodic DNS-update goroutine. Safe to call once;
+// subsequent calls are no-ops. Stop() must be called to release the
+// goroutine and unblock the ticker.
 func (d *DNSUpdater) Start() {
 	d.mu.Lock()
 	if d.running {
@@ -92,7 +115,16 @@ func (d *DNSUpdater) Stop() {
 	}
 }
 
-// performDNSUpdates updates DNS names for all online hosts
+// performDNSUpdates refreshes DNS for every wrapper that is currently
+// online. It is the only DNS-touching codepath on the steady-state hot
+// path: do not add DNS lookups in wrapper.Start() (see AGENTS.md §2.2.7).
+//
+// Per wrapper:
+//   - Skip if offline or has an error_message.
+//   - If the cache has a fresh positive entry and the wrapper's display
+//     name still looks like an IP, restore the cached name.
+//   - Otherwise schedule a reverse-DNS lookup with the per-wrapper
+//     helper updateHostDisplayName(), then update the cache.
 func (d *DNSUpdater) performDNSUpdates() {
 	if SkipDNS {
 		return

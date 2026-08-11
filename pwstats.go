@@ -58,6 +58,22 @@ func (s *GlobalStatistics) GetStartTime() time.Time {
 	return s.StartTime
 }
 
+// PWStats is the per-host statistics and state machine.
+//
+// Lifecycle fields (startup_time, last_compute) are initialized on the
+// first call to ComputeState. State-machine fields (skip_next_up_highlight,
+// loss_reference_recv, last_up_transition, has_ever_been_online,
+// last_loss_nano, last_loss_duration) are tightly coupled — they must only
+// be mutated by ComputeState, never by callers. See ComputeState's
+// statechart in docs/ARCHITECTURE.md §3.
+//
+// Read-only fields populated by the wrapper: iprepr, hrepr, error_message,
+// adaptive_interval, lastsent, lastrecv, lastrtt, lastrtt_as_string,
+// has_ever_received.
+//
+// PWStats is small (~120 bytes) and is intentionally returned by VALUE
+// from CalcStats and Stats to avoid race conditions across goroutines.
+// Do not embed another struct's mutable state into PWStats.
 type PWStats struct {
 	lastsent               int64
 	lastrecv               int64
@@ -95,6 +111,28 @@ func (p *PWStats) SetHostRepr(hrepr string) {
 	p.hrepr = hrepr
 }
 
+// ComputeState is the single point of truth for a host's up/down state.
+// It is called by every wrapper's CalcStats and must be the only function
+// that mutates the state-machine fields (see PWStats doc comment).
+//
+// Inputs:
+//   - timeout_threshold: in nanoseconds. The host is "online" iff its
+//     most recent successful receive was within this many nanoseconds.
+//
+// Behavior summary (full statechart in docs/ARCHITECTURE.md §3):
+//   - First call initializes startup_time and last_compute without
+//     emitting a transition; skip_next_up_highlight is set true iff the
+//     host starts offline, so the very first "down to up" is silent.
+//   - On up→down: capture loss_reference_recv = lastrecv so we can
+//     measure the outage duration on recovery.
+//   - On down→up (when skip_next_up_highlight is false): record
+//     last_loss_nano = now, last_loss_duration = now - loss_reference_recv,
+//     and set last_up_transition = now so the UI can highlight.
+//   - On every state change: emit one NDJSON line to transition_writer.
+//
+// Uptime is accumulated only while state was true since the previous
+// compute; OnlineUptime adds the live interval since last_compute when
+// state is currently true.
 func (p *PWStats) ComputeState(timeout_threshold int64) {
 	now := nowFunc().UnixNano()
 	if p.startup_time == 0 {
@@ -220,6 +258,15 @@ func (p PWStats) OnlineUptime(now int64) time.Duration {
 
 // GetPingInterval returns the appropriate ping interval based on host history.
 // Hosts that have never been online are pinged less frequently to save resources.
+// GetPingInterval returns the ping interval for the current host.
+// When adaptive_interval is enabled, hosts that have never been online
+// are pinged every 10 s; as soon as one responds, the wrapper switches
+// the underlying pinger's interval to 1 s. Without adaptive mode, the
+// interval is a constant 1 s.
+//
+// main.go raises the global TimeoutThresholdNS to 12 s when adaptive
+// mode is active so that a 10 s interval + slow first reply does not
+// cause false offline flapping.
 func (p *PWStats) GetPingInterval() time.Duration {
 	if !p.adaptive_interval {
 		return time.Second // default interval when adaptive mode is disabled

@@ -7,6 +7,22 @@ import (
 	"strings"
 )
 
+// PingWrapperInterface is the contract every probe implementation must
+// satisfy. See AGENTS.md §2.1 and docs/ARCHITECTURE.md §2 for the
+// concurrency contract:
+//   - Start() spawns the probe goroutine(s); must be called exactly once.
+//   - Stop() is IDEMPOTENT — implement with sync.Once. Safe to call
+//     before Start.
+//   - CalcStats(timeout) holds the wrapper mutex, calls PWStats.ComputeState,
+//     and returns a VALUE copy of the stats.
+//   - Stats() holds the read mutex and returns a heap-allocated VALUE copy
+//     of the stats as *PWStats (the interface requires a pointer; the
+//     underlying data is fresh).
+//   - SetHostRepr() is the only mutation path exposed to callers (used
+//     by DNSUpdater). Holds the write mutex.
+//
+// All wrappers also embed a *PWStats; the factory in this file
+// constructs the right wrapper based on the host-string scheme.
 type PingWrapperInterface interface {
 	Start()
 	Stop()
@@ -16,8 +32,23 @@ type PingWrapperInterface interface {
 	SetHostRepr(string)
 }
 
+// re_host_w_proto parses host strings into (scheme, family, host, port).
+// Captured groups:
+//   1: "tcp" or "ip" (the scheme)
+//   2: "" | "4" | "6" (address family hint; "" = default)
+//   3: hostname or IP, possibly wrapped in [] for IPv6
+//   4: "" or numeric port (only meaningful for tcp://)
 var re_host_w_proto = regexp.MustCompile(`^(tcp|ip)([46])?://(\[?.+?\]?)(?::(\d+))?$`)
 
+// NewPingWrapper is the probe factory. It parses the host string, chooses
+// the wrapper implementation, resolves the address, and constructs the
+// stats object. If anything fails (bad scheme, DNS error, invalid port),
+// it returns an ErrorWrapper so the rest of the program can start and
+// the failure shows up per-host in the UI.
+//
+// The factory is also responsible for enabling adaptive intervals on the
+// stats when options.adaptiveInterval is set (or when the host list
+// contained a CIDR — that decision is made in main.go).
 func NewPingWrapper(host string, options Options, transition_writer *TransitionWriter) PingWrapperInterface {
 
 	host_findings := re_host_w_proto.FindAllStringSubmatch(host, -1)
@@ -97,6 +128,9 @@ func NewPingWrapper(host string, options Options, transition_writer *TransitionW
 	}
 }
 
+// resolveIPAddr resolves a hostname (or literal IP) into a *net.IPAddr,
+// honouring the address-family hint (empty / "4" / "6"). Brackets around
+// IPv6 literals are stripped before resolution.
 func resolveIPAddr(host string, ip_family string) (*net.IPAddr, error) {
 	host = strings.Trim(host, "[]")
 	ipaddr, err := net.ResolveIPAddr("ip"+ip_family, host)

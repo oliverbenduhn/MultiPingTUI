@@ -60,6 +60,17 @@ type StatusServer struct {
 	traceSem    chan struct{}
 }
 
+// webTraceState is the per-key state of an in-flight or completed
+// traceroute. The seq counter is incremented on every new run so a
+// stale result from a previous attempt can be detected by the TUI and
+// discarded.
+//
+// Lifecycle:
+//   - Created (or fetched) in getOrCreateTraceState.
+//   - Marked running in startTrace.
+//   - Updated in finishTrace when the goroutine returns.
+//   - Pruned by pruneTraceStatesLocked when the map exceeds
+//     maxTraceStates (256) entries — oldest first.
 type webTraceState struct {
 	running    bool
 	seq        int
@@ -71,10 +82,14 @@ type webTraceState struct {
 	took       time.Duration
 }
 
+// traceRequest is the JSON body of POST /trace.
 type traceRequest struct {
 	Key string `json:"key"`
 }
 
+// traceResponse is the JSON shape of GET /trace (and POST /trace echoes
+// the current state). `Running` is true until finishTrace updates it.
+// `Output` contains the captured stdout+stderr of the traceroute binary.
 type traceResponse struct {
 	Key        string    `json:"key"`
 	Running    bool      `json:"running"`
@@ -407,6 +422,11 @@ func (s *StatusServer) stateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// viewPatch is the JSON shape accepted by POST /view. Pointer fields
+// (plus the *Hidden map field defaulting to nil) distinguish "field
+// absent" from "field set to zero value"; missing fields leave the
+// existing view unchanged. Every field is validated server-side:
+// out-of-range enum values and unknown host keys are silently dropped.
 type viewPatch struct {
 	Filter        *FilterMode     `json:"filter,omitempty"`
 	Sort          *SortMode       `json:"sort,omitempty"`

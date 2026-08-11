@@ -363,6 +363,16 @@ func (m *TUIModel) getCachedStats(wrapper PingWrapperInterface) PWStats {
 	}
 }
 
+// Update handles every bubbletea message. See AGENTS_TUI.md §1.2 for the
+// message-handling table. The very first action is
+// syncViewFromStatusServer so web-driven view changes propagate within
+// one tick.
+//
+// The switch over msg.(type) covers WindowSizeMsg, tickMsg,
+// tracerouteResult, configEditedMsg, and tea.KeyMsg. KeyMsg is the
+// largest branch and routes to the right handler via key.Matches.
+// Number keys (1-6) for column toggling live in the default branch
+// because they overlap with text input for the embedded config editor.
 func (m *TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Keep TUI view synchronized with the web live view (when enabled).
 	m.syncViewFromStatusServer()
@@ -809,6 +819,11 @@ func (m *TUIModel) detailTraceVisibleLines() int {
 	return visible
 }
 
+// syncViewFromStatusServer pulls the latest ServerView from the embedded
+// status server and applies it to the local TUIModel. Called at the top
+// of every Update tick so changes made via the web UI are reflected in
+// the TUI within one tick interval. Uses sameHiddenHosts to short-circuit
+// re-renders when nothing changed.
 func (m *TUIModel) syncViewFromStatusServer() {
 	if m.statusServer == nil {
 		return
@@ -1316,6 +1331,21 @@ func (m *TUIModel) getRemainingTime() string {
 }
 
 // RunTUI starts the TUI interface with an initial filter mode applied
+// RunTUI is the entry point for the bubbletea TUI. It performs the
+// three-part startup described in AGENTS_TUI.md §8:
+//
+//  1. Spawns ps.Start() in a goroutine with a 60 s timeout and Ctrl+C
+//     support. (Moving ps.Start() out of the goroutine was the bug
+//     analysed in DIFF_ANALYSIS.md.)
+//  2. Builds the TUIModel and optionally starts the StatusServer.
+//  3. Runs tea.NewProgram with tea.WithAltScreen().
+//
+// The deferred recover() blocks ensure the terminal is restored even if
+// bubbletea panics. The deferred statusServer.Stop() / ps.Stop() ensure
+// all goroutines are released.
+//
+// After p.Run() returns, the final TUIModel is converted back into a
+// UserSettings via userSettingsFromModel and persisted to disk.
 func RunTUI(ps *PingService, repo HostRepository, tw *TransitionWriter, initialFilter FilterMode, webPort int, globalStats *GlobalStatistics, initialSettings UserSettings, initialHostsRaw []string) (finalErr error) {
 	// Early panic protection before any terminal manipulation
 	defer func() {

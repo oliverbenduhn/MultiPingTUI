@@ -1,0 +1,65 @@
+# Cursor rules — short form
+# Read AGENTS.md before any non-trivial change.
+# This file is a compact reminder for inline completion; AGENTS.md is the
+# single source of truth.
+
+# === ARCHITECTURE ===
+# Three layers: Probe (ProbingWrapper / SystemPingWrapper / TCPPingWrapper /
+# ErrorWrapper) -> PingService + HostRepository -> TUI / StatusServer / Display.
+# Wrappers never reach into the repository. UI never mutates wrappers.
+# PingService is the only owner of Start/Stop.
+
+# === CONCURRENCY ===
+# PWStats mutations MUST hold the wrapper mutex. Stats() and CalcStats()
+# return value copies — never return *w.stats.
+# updateStatsCache() is the only place CalcStats() is called per tick.
+# getCachedStats() returns empty PWStats on miss, never blocks.
+# Stop() is idempotent (sync.Once). goroutines exit on stop within 1 tick.
+# No DNS in Start() — use DNSUpdater (3s initial, 60s period, 500ms lookup).
+
+# === STATE MACHINE ===
+# PWStats.ComputeState(timeout) is the only place state flips.
+# Never mutate skip_next_up_highlight, loss_reference_recv,
+# last_up_transition, has_ever_been_online, last_loss_nano,
+# last_loss_duration outside ComputeState.
+
+# === LIMITS (do not change without justification) ===
+# maxExpandedCIDRHosts=65536, onceWorkerLimit=100, startup sem=20,
+# DNS sem=20, traceSem=2, maxTraceStates=256,
+# maxViewPatchBytes=1MiB, maxHiddenViewItems=10000,
+# maxHiddenKeyLength=512, dnsTimeout=500ms, dnsCache positive=1h,
+# dnsCache negative=5m, adaptive slow interval=10s, adaptive threshold=12s.
+
+# === CONVENTIONS ===
+# snake_case struct fields. Early returns. Idempotent Stop.
+# ErrorWrapper for any unresolvable host — never exit().
+# Test files: *_test.go next to the file under test.
+# Reference tests: lifecycle_regression_test.go (countingWrapper, MockWrapper).
+# For time-dependent tests, use nowFunc (package-level var in pwstats.go).
+
+# === FORBIDDEN ===
+# panic in wrapper goroutines
+# DNS in Start()
+# Returning *w.stats
+# Adding a top-level dep without checking stdlib + existing deps first
+# Mixing refactors with behavior changes in one commit
+# Bypassing HostRepository from anywhere
+# Mutating PWStats state-machine fields outside ComputeState
+
+# === BUILD TAGS ===
+# pinger_tcp_win.go uses //go:build windows.
+# pinger_tcp.go is //go:build !windows.
+
+# === HOST PARSING ===
+# Regex: ^(tcp|ip)([46])?://(\[?.+?\]?)(?::(\d+))?$
+# IPv6 needs brackets: tcp://[::1]:22.
+
+# === AUTO-FALLBACK ===
+# probePureGoAllowed() in main.go probes 127.0.0.1 once on startup;
+# if "permission" / "operation not permitted" appears, fall back to -s.
+
+# === WHEN DONE ===
+# - go build ./...
+# - go test ./...
+# - update README.md / docs/ as needed
+# - never commit without the vendor diff when go.mod changed
